@@ -127,7 +127,7 @@ bool EsParserSCTE35::ParseInternal(const uint8_t* data,
                       h, pts,
                       objLocal.m_objSpliceInsert.m_breakD.duration);
                   emit_scte35_event_cb_(event);
-                  LOG(INFO) << "emit event SCTE35 Out" << std::endl;
+                  LOG(INFO) << "emit event SCTE35 Out" << pts << std::endl;
                 }
               } else {
                 if (objLocal.m_objSpliceInsert.duration_flag)
@@ -139,7 +139,7 @@ bool EsParserSCTE35::ParseInternal(const uint8_t* data,
                         get_adjusted_time(objLocal.m_objSpliceInsert.m_spliceT.pts_time,objLocal.m_SInfoData.pts_adjustment),
                         objLocal.m_objSpliceInsert.m_breakD.duration);
                     emit_scte35_event_cb_(event);
-                    LOG(INFO) << "emit event SCTE35 Out" << std::endl;
+                    LOG(INFO) << "emit event SCTE35 Out"<< pts << std::endl;
                   }
               }
             } else {
@@ -153,7 +153,7 @@ bool EsParserSCTE35::ParseInternal(const uint8_t* data,
                         : get_adjusted_time(objLocal.m_objSpliceInsert.m_spliceT.pts_time,objLocal.m_SInfoData.pts_adjustment),
                     -1);
                 emit_scte35_event_cb_(event);
-                LOG(INFO) << "emit event SCTE35 In" << std::endl;
+                LOG(INFO) << "emit event SCTE35 In" << pts<< std::endl;
               }
             }
           }

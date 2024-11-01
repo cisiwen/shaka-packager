@@ -498,7 +498,8 @@ std::optional<PackagingParams> GetPackagingParams() {
   mpd_params.preserved_segments_outside_live_window =
       absl::GetFlag(FLAGS_preserved_segments_outside_live_window);
   mpd_params.use_segment_list = absl::GetFlag(FLAGS_dash_force_segment_list);
-
+  mpd_params.pts_time_offset =
+      absl::GetFlag(FLAGS_pts_time_offset);
   if (!absl::GetFlag(FLAGS_utc_timings).empty()) {
     std::vector<KVPair> pairs = SplitStringIntoKeyValuePairs(
         absl::GetFlag(FLAGS_utc_timings), '=', ',');
@@ -543,7 +544,8 @@ std::optional<PackagingParams> GetPackagingParams() {
   hls_params.media_sequence_number =
       absl::GetFlag(FLAGS_hls_media_sequence_number);
   hls_params.start_time_offset = absl::GetFlag(FLAGS_hls_start_time_offset);
-
+  hls_params.pts_time_offset =
+      absl::GetFlag(FLAGS_pts_time_offset);
   TestParams& test_params = packaging_params.test_params;
   test_params.dump_stream_info = absl::GetFlag(FLAGS_dump_stream_info);
   test_params.inject_fake_clock = absl::GetFlag(FLAGS_use_fake_clock_for_muxer);

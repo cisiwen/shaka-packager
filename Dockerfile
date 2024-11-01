@@ -21,7 +21,7 @@ RUN cd packager; go build packager_ext.go ; chmod +x packager_ext
 
 # Copy only result binaries to our final image.
 FROM alpine:3.19
-RUN apk add --no-cache libstdc++ python3 nlohmann-json nano go
+RUN apk add --no-cache libstdc++ python3 nlohmann-json nano go coreutils
 COPY --from=builder /shaka-packager/build/packager/packager \
                     /shaka-packager/build/packager/mpd_generator \
                     /shaka-packager/build/packager/pssh-box.py \

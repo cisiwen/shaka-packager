@@ -42,6 +42,8 @@ struct HlsParams {
   /// accessible as they may still be accessed by the player. The segments are
   /// not removed if the value is zero.
   size_t preserved_segments_outside_live_window = 0;
+  /// Offset to add to pts time to use to calculate EXT-X-PROGRAM_DATETIME value"
+  uint64_t pts_time_offset = 0;
   /// Defines the key uri for "identity" and "com.apple.streamingkeydelivery"
   /// key formats. Ignored if the playlist is not encrypted or not using the
   /// above key formats.
