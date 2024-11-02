@@ -64,7 +64,7 @@ EsParserSCTE35::EsParserSCTE35(const uint32_t pid,
       new_stream_info_cb_(new_stream_info_cb),
       emit_sample_cb_(emit_sample_cb),
       emit_scte35_event_cb_(emit_scte35_event_cb),
-      sent_info_(true),//Will send info in mp2t_media_parser immediately after scte35_parser creation 
+      sent_info_(false),//Will send info in mp2t_media_parser immediately after scte35_parser creation  (was true - how it worked?)
       sent_test_(0),
       last_pts_(0) {};
 
@@ -76,7 +76,7 @@ bool EsParserSCTE35::Parse(const uint8_t* buf,
     sent_info_ = true;
     auto info = std::make_shared<SCTE35StreamInfo>(
         pid(), kMpeg2Timescale, kInfiniteDuration, kCodecSCTE35, "", "", "");
-   
+    LOG(INFO) << "SCTE35 send new stream info ";
     new_stream_info_cb_(info);
   }
 
