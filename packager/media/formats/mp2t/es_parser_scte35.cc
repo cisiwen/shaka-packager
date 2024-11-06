@@ -78,6 +78,11 @@ bool EsParserSCTE35::Parse(const uint8_t* buf,
         pid(), kMpeg2Timescale, kInfiniteDuration, kCodecSCTE35, "", "", "");
     LOG(INFO) << "SCTE35 send new stream info ";
     new_stream_info_cb_(info);
+    /*std::shared_ptr<SCTE35Event> event = std::make_shared<SCTE35Event>(
+                    "scte35spliceinsertIn",
+                    pts, -1);
+    emit_scte35_event_cb_(event);
+    LOG(INFO) << "emit WELCOME event SCTE35 In" << pts<< std::endl;*/
   }
 
   return ParseInternal(buf, size, pts);

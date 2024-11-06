@@ -347,7 +347,7 @@ void Mp2tMediaParser::RegisterPes(int pmt_pid,
       pid_type = PidState::kPidTextPes;
       break;
     case TsStreamType::kSCTE35:
-    case TsStreamType::kPesPrivateData:
+    //case TsStreamType::kPesPrivateData: // do not need this after ffmpeg fix
       es_parser.reset(new EsParserSCTE35(pes_pid, on_new_stream, on_emit_text, on_emit_scte35,
                                       descriptor, descriptor_length));
       LOG(INFO) << "Found scte35 stream (type = 0x "
