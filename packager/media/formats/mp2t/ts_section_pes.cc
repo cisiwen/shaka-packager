@@ -12,6 +12,7 @@
 #include <packager/media/base/timestamp.h>
 #include <packager/media/formats/mp2t/es_parser.h>
 #include <packager/media/formats/mp2t/mp2t_common.h>
+#include <iostream>
 
 static const int kPesStartCode = 0x000001;
 
@@ -21,14 +22,20 @@ static const int kPesStartCode = 0x000001;
 // |time| + k * (2 ^ 33)
 // where k is estimated so that the unrolled timestamp
 // is as close as possible to |previous_unrolled_time|.
-static int64_t UnrollTimestamp(int64_t previous_unrolled_time, int64_t time) {
+static int64_t UnrollTimestamp(int64_t previous_unrolled_time, int64_t time) { 
   // Mpeg2 TS timestamps have an accuracy of 33 bits.
   const int nbits = 33;
 
   // |timestamp| has a precision of |nbits|
   // so make sure the highest bits are set to 0.
-  DCHECK_EQ((time >> nbits), 0);
 
+
+  DCHECK_EQ((time >> nbits), 0);
+  //126000 5474206969 leads to negative result
+  //time0: -2394030290 time1: 6195904302 time2: 14785838894
+  //diff0: 2394156290 diff1: 6195778302 diff2: 14785712894
+  //time: 6195904302, unrolled: -2394030290, previos: 126000
+  if (time > 0 && time > previous_unrolled_time) return time; //fix because we don't want to get wrong time at start
   // Consider 3 possibilities to estimate the missing high bits of |time|.
   int64_t previous_unrolled_time_high = (previous_unrolled_time >> nbits);
   int64_t time0 = ((previous_unrolled_time_high - 1) << nbits) | time;
@@ -58,7 +65,7 @@ static int64_t UnrollTimestamp(int64_t previous_unrolled_time, int64_t time) {
   }
   if (diff2 < min_diff)
     unrolled_time = time2;
-
+  
   return unrolled_time;
 }
 
@@ -103,7 +110,6 @@ bool TsSectionPes::Parse(bool payload_unit_start_indicator,
   // Ignore partial PES.
   if (wait_for_pusi_ && !payload_unit_start_indicator)
     return true;
-
   bool parse_result = true;
   if (payload_unit_start_indicator) {
     // Try emitting a packet since we might have a pending PES packet
@@ -173,7 +179,6 @@ bool TsSectionPes::Emit(bool emit_for_unknown_size) {
     return true;
   }
   DVLOG(LOG_LEVEL_PES) << "pes_packet_length=" << pes_packet_length;
-
   // Parse the packet.
   bool parse_result = ParseInternal(raw_pes, raw_pes_size);
 
@@ -193,8 +198,12 @@ bool TsSectionPes::ParseInternal(const uint8_t* raw_pes, int raw_pes_size) {
   RCHECK(bit_reader.ReadBits(24, &packet_start_code_prefix));
   RCHECK(bit_reader.ReadBits(8, &stream_id));
   RCHECK(bit_reader.ReadBits(16, &pes_packet_length));
-
-  RCHECK(packet_start_code_prefix == kPesStartCode);
+  //RCHECK(packet_start_code_prefix == kPesStartCode);
+  if (packet_start_code_prefix != kPesStartCode){
+    //TODO: find real pts dts
+    //std::cout<<"Not a PES packet; try to parse as MPEGTS with nullable pts dts: "<<base::HexEncode(&raw_pes[2], raw_pes_size - 2)<<std::endl;
+    return es_parser_->Parse(&raw_pes[1], raw_pes_size - 1, 1, 1);
+  }
   DVLOG(LOG_LEVEL_PES) << "stream_id=" << stream_id;
   if (pes_packet_length == 0)
     pes_packet_length = static_cast<int>(bit_reader.bits_available()) / 8;
@@ -207,9 +216,13 @@ bool TsSectionPes::ParseInternal(const uint8_t* raw_pes, int raw_pes_size) {
   bool is_audio_stream_id =
       ((stream_id & 0xe0) == 0xc0) || stream_id == kPrivateStream1;
   bool is_video_stream_id = ((stream_id & 0xf0) == 0xe0);
-  if (!is_audio_stream_id && !is_video_stream_id)
-    return true;
-
+  bool is_scte35_stream_id =  (stream_id == 0xfc); 
+  //TODO: improve scte35 stream id check
+if (!is_audio_stream_id && !is_video_stream_id && !is_scte35_stream_id)
+{
+  LOG(INFO)<< "unknown stream_id: "<<stream_id<<std::endl;
+  return true;
+}
   // Read up to "pes_header_data_length".
   int dummy_2;
   int PES_scrambling_control;
@@ -232,7 +245,7 @@ bool TsSectionPes::ParseInternal(const uint8_t* raw_pes, int raw_pes_size) {
   RCHECK(bit_reader.ReadBits(1, &data_alignment_indicator));
   RCHECK(bit_reader.ReadBits(1, &copyright));
   RCHECK(bit_reader.ReadBits(1, &original_or_copy));
-  RCHECK(bit_reader.ReadBits(2, &pts_dts_flags));
+  RCHECK(bit_reader.ReadBits(2, &pts_dts_flags)); //pes_header.Write(with_dts?3:2, 2); // PTS_DTS_flags
   RCHECK(bit_reader.ReadBits(1, &escr_flag));
   RCHECK(bit_reader.ReadBits(1, &es_rate_flag));
   RCHECK(bit_reader.ReadBits(1, &dsm_trick_mode_flag));
@@ -304,9 +317,9 @@ bool TsSectionPes::ParseInternal(const uint8_t* raw_pes, int raw_pes_size) {
       (pes_header_start_size -
        static_cast<int>(bit_reader.bits_available()) / 8);
   RCHECK(pes_header_remaining_size >= 0);
-
+                              
   // Read the PES packet.
-  DVLOG(LOG_LEVEL_PES) << "Emit a reassembled PES:"
+ DVLOG(LOG_LEVEL_PES) << "Emit a reassembled PES:"
                        << " size=" << es_size << " pts=" << media_pts
                        << " dts=" << media_dts << " data_alignment_indicator="
                        << data_alignment_indicator;

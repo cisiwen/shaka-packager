@@ -30,6 +30,8 @@ struct HlsParams {
   /// The base URL for the Media Playlists and media files listed in the
   /// playlists. This is the prefix for the files.
   std::string base_url;
+  /// The advert URL for scte35 EXT-X-DATERANGE tag.
+  std::string advert_url;
   /// Defines the live window, or the guaranteed duration of the time shifting
   /// buffer for 'live' playlists.
   double time_shift_buffer_depth = 0;
@@ -40,6 +42,8 @@ struct HlsParams {
   /// accessible as they may still be accessed by the player. The segments are
   /// not removed if the value is zero.
   size_t preserved_segments_outside_live_window = 0;
+  /// Offset to add to pts time to use to calculate EXT-X-PROGRAM_DATETIME value"
+  uint64_t pts_time_offset = 0;
   /// Defines the key uri for "identity" and "com.apple.streamingkeydelivery"
   /// key formats. Ignored if the playlist is not encrypted or not using the
   /// above key formats.

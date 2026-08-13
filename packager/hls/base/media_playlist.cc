@@ -10,7 +10,13 @@
 #include <cinttypes>
 #include <cmath>
 #include <memory>
+#include <iostream>
 #include <optional>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <string>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
@@ -104,6 +110,56 @@ void AppendExtXMap(const MediaInfo& media_info, std::string* out) {
   }
 }
 
+std::string time_in_HH_MM_SS_MMM(int64_t time_offset = 0) // time offset in milliseconds
+{
+    using namespace std::chrono;
+
+    // get current time
+    auto now = system_clock::now() + static_cast<std::chrono::milliseconds>(time_offset);
+
+    // get number of milliseconds for the current second
+    // (remainder after division into seconds)
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+
+    // convert to std::time_t in order to convert to std::tm (broken time)
+    auto timer = system_clock::to_time_t(now);
+
+    // convert to broken time
+    std::tm bt = *std::localtime(&timer);
+
+    std::ostringstream oss;
+    //<YYYY-MM-DDThh:mm:ss.SSSZ>
+    oss << std::put_time(&bt, "%Y-%m-%dT%H:%M:%S"); // HH:MM:SS
+    oss << '.' << std::setfill('0') << std::setw(3) << ms.count()<<'Z';
+
+    return oss.str();
+}
+
+std::string start_time_in_HH_MM_SS_MMM(int64_t start_time = 0) // pts start time 
+{
+    using namespace std::chrono;
+
+    // get millisec time
+    std::chrono::time_point<std::chrono::system_clock> now ( std::chrono::milliseconds((int64_t)start_time/90) );  // start_time / 90000 = time in seconds
+
+    // get number of milliseconds for the current second
+    // (remainder after division into seconds)
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+
+    // convert to std::time_t in order to convert to std::tm (broken time)
+    auto timer = system_clock::to_time_t(now);
+
+    // convert to broken time
+    std::tm bt = *std::localtime(&timer);
+
+    std::ostringstream oss;
+    //<YYYY-MM-DDThh:mm:ss.SSSZ>
+    oss << std::put_time(&bt, "%Y-%m-%dT%H:%M:%S"); // HH:MM:SS
+    oss << '.' << std::setfill('0') << std::setw(3) << ms.count()<<'Z';
+
+    return oss.str();
+}
+
 std::string CreatePlaylistHeader(
     const MediaInfo& media_info,
     int32_t target_duration,
@@ -111,7 +167,8 @@ std::string CreatePlaylistHeader(
     MediaPlaylist::MediaPlaylistStreamType stream_type,
     uint32_t media_sequence_number,
     int discontinuity_sequence_number,
-    std::optional<double> start_time_offset) {
+    std::optional<double> start_time_offset,
+    std::string program_datetime) {
   const std::string version = GetPackagerVersion();
   std::string version_line;
   if (!version.empty()) {
@@ -157,7 +214,13 @@ std::string CreatePlaylistHeader(
     absl::StrAppendFormat(&header, "#EXT-X-START:TIME-OFFSET=%f\n",
                           start_time_offset.value());
   }
+  if (!program_datetime.empty()){
+     // #EXT-X-PROGRAM-DATE-TIME:<YYYY-MM-DDThh:mm:ss.SSSZ>
+    absl::StrAppendFormat(&header, "#EXT-X-PROGRAM-DATE-TIME:%s\n",
+                          program_datetime);
+  }
 
+  
   // Put EXT-X-MAP at the end since the rest of the playlist is about the
   // segment and key info.
   AppendExtXMap(media_info, &header);
@@ -340,6 +403,103 @@ std::string PlacementOpportunityEntry::ToString() {
   return "#EXT-X-PLACEMENT-OPPORTUNITY";
 }
 
+
+class XCueOut : public HlsEntry {
+ public:
+  XCueOut(float duration_seconds, uint8_t id, std::string scte_data, std::string date_time, std::string advert_url);
+
+  std::string ToString() override;
+
+ 
+  float duration_seconds_;
+  std::string date_time_;
+  std::string scte_data_;
+  std::string advert_url_;
+  uint8_t id_;
+  private:
+  XCueOut(const XCueOut&) = delete;
+  XCueOut& operator=(const XCueOut&) =
+      delete;
+};
+
+XCueOut::XCueOut(float duration_seconds, uint8_t id, std::string scte_data, std::string date_time, std::string advert_url)
+    : HlsEntry(HlsEntry::EntryType::kExtCueOut),
+    duration_seconds_(duration_seconds),
+    date_time_(date_time),
+    scte_data_(scte_data),
+    advert_url_(advert_url),
+    id_(id) {};
+
+std::string XCueOut::ToString() {
+  // #EXT-X-DATERANGE:ID="999",START-DATE="2018-08-22T21:54:00.079Z",PLANNED-DURATION=30.000,SCTE35-OUT=0xFC302500000000000000FFF01405000003E77FEFFE0011FB9EFE002932E00001010100004D192A59
+  // #EXT-X-DATERANGE:ID="ad1",CLASS="com.apple.hls.interstitial",START-DATE="2020-01-02T21:55:44.000Z",DURATION=15.0,X-ASSET-URI="http://example.com/ad1.m3u8",X-RESUME-OFFSET=0,X-RESTRICT="SKIP,JUMP",X-COM-EXAMPLE-BEACON=123
+  // #EXT-X-DATERANGE:ID="4",CLASS="com.apple.hls.interstitial",START-DATE="2020-01-01T11:00:31.000Z",DURATION=3,X-RESUME-OFFSET=4,X-ASSET-URI="https://example.com/index5.m3u8",X-TIMELINE-OCCUPIES=RANGE
+  //#EXT-X-DATERANGE:ID="ad2",CLASS="com.apple.hls.interstitial",START-DATE="2021-01-04T05:00:10.000Z",DURATION=30,X-ASSET-LIST="https://example.com/asset_list.json",X-RESUME-OFFSET=0,X-TIMELINE-OCCUPIES="RANGE"
+  std::string result = !date_time_.empty() ? 
+    //absl::StrFormat("EXT-X-DATERANGE:ID=\"%d\",START-DATE=\"%s\",PLANNED-DURATION=%.3f,SCTE35-OUT=%s", id_,date_time_,duration_seconds_,scte_data_)
+    absl::StrFormat("#EXT-X-DATERANGE:ID=\"%d\",CLASS=\"com.apple.hls.interstitial\",START-DATE=\"%s\",DURATION=%.3f,X-RESUME-OFFSET=%.3f,X-ASSET-URI=\"%s?duration=%d\",X-TIMELINE-OCCUPIES=\"RANGE\"\n#EXT-X-PROGRAM-DATE-TIME:%s\n#EXT-X-CUE-OUT:%.3f", id_, date_time_, duration_seconds_,0, advert_url_, (int64_t)duration_seconds_, date_time_, duration_seconds_)
+    : 
+    absl::StrFormat("#EXT-X-CUE-OUT:%.3f", duration_seconds_);
+
+  return result;
+};
+
+class XCueCont : public HlsEntry {
+ public:
+  XCueCont(float duration_seconds, float passed_seconds);
+
+  std::string ToString() override;
+
+ private:
+  float duration_seconds_;
+  float passed_seconds_;
+  XCueCont(const XCueCont&) = delete;
+  XCueCont& operator=(const XCueCont&) =
+      delete;
+};
+
+XCueCont::XCueCont(float duration_seconds, float passed_seconds)
+    : HlsEntry(HlsEntry::EntryType::kExtCueCont),
+    duration_seconds_(duration_seconds),
+    passed_seconds_(passed_seconds) {};
+
+std::string XCueCont::ToString() {
+  std::string result = absl::StrFormat("#EXT-X-CUE-CONT:%.3f/%.3f", passed_seconds_, duration_seconds_);
+  return result;
+};
+
+
+class XCueIn : public HlsEntry {
+ public:
+  XCueIn(uint8_t id, std::string scte_data, bool need_date_time);
+
+  std::string ToString() override;
+
+ private:
+  std::string date_time_;
+  std::string scte_data_;
+  bool need_date_time_;
+  uint8_t id_;
+  XCueIn(const XCueIn&) = delete;
+  XCueIn& operator=(const XCueIn&) =
+      delete;
+};
+
+XCueIn::XCueIn( uint8_t id, std::string scte_data, bool need_date_time)
+    : HlsEntry(HlsEntry::EntryType::kExtCueIn),
+    scte_data_(scte_data),
+    need_date_time_(need_date_time),
+    id_(id)  {
+      date_time_ = time_in_HH_MM_SS_MMM();
+    }
+
+std::string XCueIn::ToString() {
+  // #EXT-X-DATERANGE:ID="999",END-DATE="2018-08-22T21:54:30.109Z",DURATION=30.030, SCTE35-IN=0xFC0000425100FFF0140500000300000000E77FEFFE0011FB9EFE0029004D1932E0000100101002A22
+  //return need_date_time_? absl::StrFormat("#EXT-X-DATERANGE:ID=\"%d\",SCTE35-IN=%s", id_, scte_data_)
+  //  : "#EXT-X-CUE-IN";
+  return "#EXT-X-CUE-IN";
+}
+
 }  // namespace
 
 HlsEntry::HlsEntry(HlsEntry::EntryType type) : type_(type) {}
@@ -470,6 +630,15 @@ void MediaPlaylist::AddKeyFrame(int64_t timestamp,
   key_frames_.push_back({timestamp, start_byte_offset, size, std::string("")});
 }
 
+void MediaPlaylist::AddScte35Event(int64_t timestamp,
+                                int64_t duration, const std::string& cue_data) {
+  last_scte_id++;
+  LOG(INFO)<<"HLS added SCTE35 duration "<<duration<<std::endl;
+  scte35_events_.push_back({last_scte_id, timestamp, duration, cue_data,""});
+  //scte35_events_.push_back({last_scte_id, timestamp, 90*time_scale_, cue_data,""}); // test: generate 90 sec duration adverts
+}
+
+
 void MediaPlaylist::AddEncryptionInfo(MediaPlaylist::EncryptionMethod method,
                                       const std::string& url,
                                       const std::string& key_id,
@@ -491,15 +660,48 @@ void MediaPlaylist::AddPlacementOpportunity() {
   entries_.emplace_back(new PlacementOpportunityEntry());
 }
 
+void MediaPlaylist::AddXCueOut(Scte35 scte35) {
+  LOG(INFO)<<"HLS: XCueOut "<<static_cast< float >(scte35.duration)/time_scale_<<std::endl;
+  entries_.emplace_back(new XCueOut(static_cast< float >(scte35.duration)/time_scale_, scte35.id, scte35.cue_data, start_time_in_HH_MM_SS_MMM(scte35.timestamp + hls_params_.pts_time_offset), hls_params_.advert_url));
+}
+
+void MediaPlaylist::AddXCueCont(int64_t duration, float passed) {
+  float duration_seconds = static_cast<float>(duration)/time_scale_;
+  LOG(INFO)<<"HLS: XCueCont "<< duration_seconds <<std::endl;
+  entries_.emplace_back(new XCueCont(duration_seconds, passed));
+}
+
+void MediaPlaylist::AddXCueIn(Scte35 scte35) {
+  LOG(INFO)<<"HLS: XCueIn "<<std::endl;
+  entries_.emplace_back(new XCueIn(scte35.id, scte35.cue_data, need_date_time_));
+}
+
 bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
   if (!target_duration_set_) {
     SetTargetDuration(ceil(GetLongestSegmentDuration()));
   }
+  int64_t start_time = 0;
 
+  for (auto iter = entries_.begin(); iter != entries_.end(); ++iter) {
+      if (iter->get()->type() == HlsEntry::EntryType::kExtInf) {
+        SegmentInfoEntry* segment_info =
+            reinterpret_cast<SegmentInfoEntry*>(iter->get());
+        start_time = segment_info->start_time();
+        break;
+      }
+    }
   std::string content = CreatePlaylistHeader(
       media_info_, target_duration_, hls_params_.playlist_type, stream_type_,
       media_sequence_number_, discontinuity_sequence_number_,
-      hls_params_.start_time_offset);
+      hls_params_.start_time_offset, start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset));
+ 
+    LOG(INFO)<<"HLS header program datetime "<<start_time<< " offset: "<<hls_params_.pts_time_offset<<" "<<start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset)<<std::endl;
+  //for (const auto& entry : entries_)
+/*  if (previous_Scte35_.duration > 0  && previous_Scte35_.timestamp <= start_time){
+    if(previous_Scte35_.timestamp <= static_cast<uint64_t>(start_time) + hls_params_.time_shift_buffer_depth)*/
+  if (previous_Scte35_.duration > 0 ) {  
+     content += absl::StrFormat("#EXT-X-DATERANGE:ID=\"%d\",CLASS=\"com.apple.hls.interstitial\",START-DATE=\"%s\",DURATION=%.3f,X-RESUME-OFFSET=%.3f,X-ASSET-URI=\"%s?duration=%d\",X-TIMELINE-OCCUPIES=\"RANGE\"\n",previous_Scte35_.id,previous_Scte35_.datetime,previous_Scte35_.duration/time_scale_,0,hls_params_.advert_url,(int64_t)previous_Scte35_.duration/time_scale_);
+  }
 
   for (const auto& entry : entries_)
     absl::StrAppendFormat(&content, "%s\n", entry->ToString().c_str());
@@ -635,7 +837,44 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
   // segment. So the current segment duration is added to the sum of segment
   // durations (in the manifest/playlist) after sliding the window.
   SlideWindow();
+  bool inserted_cue = false;
 
+  if (!scte35_events_.empty()){
+    //insert pending scte35 cues
+    //possibly need to iter through the list
+    auto iter =scte35_events_.front();
+     //for (auto iter = scte35_events_.begin(); iter != scte35_events_.end(); ++iter) {
+      if (iter.timestamp <= start_time){
+        if (iter.duration >= 0){
+          current_Scte35_ = iter;
+          //current_Scte35_.datetime = time_in_HH_MM_SS_MMM(1000*hls_params_.time_shift_buffer_depth);
+          LOG(INFO)<<"HLS: XCueOut "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
+          current_Scte35_.datetime = start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset);
+          AddXCueOut(current_Scte35_);
+        }
+        else {
+          LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
+          current_Scte35_ = {0,0,0,"",""};
+          //TODO: check if needed if no cue was before
+          AddXCueIn(current_Scte35_);
+        }
+        scte35_events_.pop_front();
+        inserted_cue = true;
+      }
+  }
+  if (!inserted_cue && current_Scte35_.duration > 0  && current_Scte35_.timestamp <= start_time){
+    if(current_Scte35_.timestamp + static_cast<uint64_t>(current_Scte35_.duration) <= static_cast<uint64_t>(start_time)){
+      //TODO: I'm not sure if this needed (Usually Cue In is sent)
+      LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(current_Scte35_.timestamp + hls_params_.pts_time_offset)<<" duration: "<<current_Scte35_.duration<<" timestamp: "<<current_Scte35_.timestamp<<" starttime: "<<start_time<<std::endl;
+      current_Scte35_ = {0,0,0,"",""};
+      AddXCueIn(current_Scte35_);
+    } else {
+      float passed_seconds = static_cast<float>(start_time - current_Scte35_.timestamp)/90000;
+      AddXCueCont(current_Scte35_.duration, passed_seconds);
+    }
+    inserted_cue = true;
+  }
+  //TODO: if current_Scte35 is not null then possible add X-CUE-CONT
   const double segment_duration_seconds =
       static_cast<double>(duration) / time_scale_;
   longest_segment_duration_seconds_ =
@@ -726,7 +965,17 @@ void MediaPlaylist::SlideWindow() {
       ext_x_keys.push_back(std::move(*last));
     } else if (entry_type == HlsEntry::EntryType::kExtDiscontinuity) {
       ++discontinuity_sequence_number_;
-    } else {
+    } else if (entry_type == HlsEntry::EntryType::kExtCueOut ){
+      const XCueOut& xcue =
+          *reinterpret_cast<XCueOut*>(last->get());
+      previous_Scte35_ = {xcue.id_, 1, static_cast<int64_t>(xcue.duration_seconds_*time_scale_), xcue.scte_data_, xcue.date_time_}; //when cueout goes out of range then need to add extxdaterange header
+    } else if (entry_type == HlsEntry::EntryType::kExtCueIn ){
+      previous_Scte35_ = {0, 0, 0, "", ""}; //when cuein goes out of range then need to remove extxdaterange header
+    }
+     else if (entry_type == HlsEntry::EntryType::kExtPlacementOpportunity || entry_type == HlsEntry::EntryType::kExtCueCont) {
+        //do smth with Cues
+
+      } else { 
       DCHECK_EQ(static_cast<int>(entry_type),
                 static_cast<int>(HlsEntry::EntryType::kExtInf));
 

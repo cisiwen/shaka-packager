@@ -44,6 +44,8 @@ struct MpdParams {
   /// accessible as they may still be accessed by the player. The segments are
   /// not removed if the value is zero.
   size_t preserved_segments_outside_live_window = 0;
+  ///Offset to add to pts time to use in mpd timestamps 
+  uint64_t pts_time_offset = 0;
   /// UTCTimings. For dynamic MPD only.
   struct UtcTiming {
     std::string scheme_id_uri;

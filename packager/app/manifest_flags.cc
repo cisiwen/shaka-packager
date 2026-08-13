@@ -42,3 +42,8 @@ ABSL_FLAG(bool,
           true,
           "True forces the muxer to order streams in the order given "
           "on the command-line. False uses the previous unordered behavior.");
+ABSL_FLAG(
+    uint64_t,
+    pts_time_offset,
+    0,
+    "Offset to add to pts time to use in mpd timestamps and in hls EXT-X-PROGRAM_DATETIME value");
