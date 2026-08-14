@@ -10,15 +10,15 @@
 #ifndef MPD_BASE_MPD_NOTIFIER_UTIL_H_
 #define MPD_BASE_MPD_NOTIFIER_UTIL_H_
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
-#include <absl/strings/escaping.h>
 
 #include <packager/mpd/base/media_info.pb.h>
 #include <packager/mpd/base/mpd_builder.h>
 
-namespace shaka{
+namespace shaka {
 
 enum ContentType {
   kContentTypeUnknown,

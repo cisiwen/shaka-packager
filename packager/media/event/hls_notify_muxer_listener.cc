@@ -6,16 +6,26 @@
 
 #include <packager/media/event/hls_notify_muxer_listener.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 
 #include <packager/hls/base/hls_notifier.h>
 #include <packager/macros/compiler.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/base/protection_system_specific_info.h>
+#include <packager/media/base/range.h>
+#include <packager/media/event/event_info.h>
 #include <packager/media/event/muxer_listener_internal.h>
+#include <packager/mpd/base/media_info.pb.h>
 
 namespace shaka {
 namespace media {
@@ -170,6 +180,7 @@ void HlsNotifyMuxerListener::OnMediaEnd(const MediaRanges& media_ranges,
   // before all Media Playlists are read. Which could cause problems
   // setting the correct EXT-X-TARGETDURATION.
   if (media_info_->has_segment_template()) {
+    hls_notifier_->NotifyEndOfStream();
     return;
   }
   if (media_ranges.init_range) {
@@ -240,6 +251,8 @@ void HlsNotifyMuxerListener::OnMediaEnd(const MediaRanges& media_ranges,
     }
   }
   event_info_.clear();
+
+  hls_notifier_->NotifyEndOfStream();
 }
 
 void HlsNotifyMuxerListener::OnNewSegment(const std::string& file_name,

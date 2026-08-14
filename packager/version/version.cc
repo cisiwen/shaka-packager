@@ -6,6 +6,9 @@
 
 #include <packager/version/version.h>
 
+#include <string>
+
+#include <absl/base/thread_annotations.h>
 #include <absl/synchronization/mutex.h>
 
 namespace shaka {
@@ -32,11 +35,11 @@ class Version {
   ~Version() {}
 
   const std::string& GetVersion() {
-    absl::ReaderMutexLock lock(&mutex_);
+    absl::ReaderMutexLock lock(mutex_);
     return version_;
   }
   void SetVersion(const std::string& version) {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     version_ = version;
   }
 
@@ -52,7 +55,7 @@ class Version {
 
 static Version g_packager_version;
 
-std::string GetPackagerProjectUrl(){
+std::string GetPackagerProjectUrl() {
   return kPackagerGithubUrl;
 }
 

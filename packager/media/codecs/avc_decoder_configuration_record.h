@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 #include <packager/macros/classes.h>
 #include <packager/media/base/fourccs.h>
@@ -59,7 +58,7 @@ class AVCDecoderConfigurationRecord : public DecoderConfigurationRecord {
   uint32_t coded_height_ = 0;
   uint32_t pixel_width_ = 0;
   uint32_t pixel_height_ = 0;
-  
+
   // Only should be present for special case profile values.
   // Refer to ISO/IEC 14496-15 Section 5.3.3.1.1.
   uint8_t chroma_format_ = 0;

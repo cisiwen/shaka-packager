@@ -6,13 +6,19 @@
 
 #include <packager/media/codecs/avc_decoder_configuration_record.h>
 
+#include <cstdint>
+#include <iterator>
+#include <string>
+
+#include <absl/log/log.h>
 #include <absl/strings/ascii.h>
 #include <absl/strings/escaping.h>
 
-#include <packager/macros/logging.h>
 #include <packager/media/base/buffer_reader.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/rcheck.h>
 #include <packager/media/codecs/h264_parser.h>
+#include <packager/media/codecs/nalu_reader.h>
 #include <packager/utils/bytes_to_string_view.h>
 
 namespace shaka {
@@ -85,14 +91,15 @@ bool AVCDecoderConfigurationRecord::ParseInternal() {
     AddNalu(nalu);
   }
 
-  if (profile_indication_ == 100 || profile_indication_ == 110 || 
+  if (profile_indication_ == 100 || profile_indication_ == 110 ||
       profile_indication_ == 122 || profile_indication_ == 144) {
-
     uint8_t sps_ext_count;
-    if (!reader.Read1(&chroma_format_) || !reader.Read1(&bit_depth_luma_minus8_) ||
-        !reader.Read1(&bit_depth_chroma_minus8_) || !reader.Read1(&sps_ext_count)) {
-       LOG(WARNING) << "Insufficient bits in bitstream for given AVC profile";
-       return true;
+    if (!reader.Read1(&chroma_format_) ||
+        !reader.Read1(&bit_depth_luma_minus8_) ||
+        !reader.Read1(&bit_depth_chroma_minus8_) ||
+        !reader.Read1(&sps_ext_count)) {
+      LOG(WARNING) << "Insufficient bits in bitstream for given AVC profile";
+      return true;
     }
     chroma_format_ &= 0x3;
     bit_depth_luma_minus8_ &= 0x7;
@@ -107,8 +114,8 @@ bool AVCDecoderConfigurationRecord::ParseInternal() {
       RCHECK(nalu.Initialize(Nalu::kH264, nalu_data, size));
       RCHECK(nalu.type() == Nalu::H264_SPSExtension);
       AddNalu(nalu);
-    } 
-  } 	
+    }
+  }
   return true;
 }
 

@@ -7,6 +7,12 @@
 #ifndef PACKAGER_MEDIA_BASE_MOCK_AES_CRYPTOR_H_
 #define PACKAGER_MEDIA_BASE_MOCK_AES_CRYPTOR_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+#include <gmock/gmock.h>
+
 #include <packager/media/base/aes_cryptor.h>
 
 namespace shaka {

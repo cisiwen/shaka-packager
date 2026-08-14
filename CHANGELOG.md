@@ -1,6 +1,170 @@
 # Changelog
 
 
+## [3.9.3](https://github.com/shaka-project/shaka-packager/compare/v3.9.2...v3.9.3) (2026-07-27)
+
+
+### Bug Fixes
+
+* Fix parsing of av1 metadata OBUs ([#1611](https://github.com/shaka-project/shaka-packager/issues/1611)) ([207fb00](https://github.com/shaka-project/shaka-packager/commit/207fb007edd833611851e20816ff8dd6d4055e0a))
+
+## [3.9.2](https://github.com/shaka-project/shaka-packager/compare/v3.9.1...v3.9.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **isobmff:** validate stts entry count before allocation ([#1597](https://github.com/shaka-project/shaka-packager/issues/1597)) ([7c011ac](https://github.com/shaka-project/shaka-packager/commit/7c011aca277d0957366300ad79379cb519d348dc))
+* revert [#1540](https://github.com/shaka-project/shaka-packager/issues/1540) cipher-block alignment to restore one-subsample-per-NALU layout ([#1598](https://github.com/shaka-project/shaka-packager/issues/1598)) ([14529b6](https://github.com/shaka-project/shaka-packager/commit/14529b669dec6f2d91338663d7b5bc41e66c4ce2))
+
+## [3.9.1](https://github.com/shaka-project/shaka-packager/compare/v3.9.0...v3.9.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* correct AES-128 whole-segment encryption for MP4/CMAF HLS ([#1594](https://github.com/shaka-project/shaka-packager/issues/1594)) ([a01ce20](https://github.com/shaka-project/shaka-packager/commit/a01ce20f97e28bcd021b8b7e4de1522ec1b9c999)), closes [#1588](https://github.com/shaka-project/shaka-packager/issues/1588) [#1587](https://github.com/shaka-project/shaka-packager/issues/1587)
+
+## [3.9.0](https://github.com/shaka-project/shaka-packager/compare/v3.8.0...v3.9.0) (2026-07-08)
+
+
+### Features
+
+* add CPIX support for encryption and decryption keys ([#1590](https://github.com/shaka-project/shaka-packager/issues/1590)) ([22c64d3](https://github.com/shaka-project/shaka-packager/commit/22c64d3c941de3738a944ed21e477eb8d7a047e4))
+
+## [3.8.0](https://github.com/shaka-project/shaka-packager/compare/v3.7.2...v3.8.0) (2026-06-29)
+
+
+### Features
+
+* add HLS AES-128 clear-key encryption for TS + MP4 ([#1572](https://github.com/shaka-project/shaka-packager/issues/1572)) ([9d96f9c](https://github.com/shaka-project/shaka-packager/commit/9d96f9c29a3ce246bac37af4b5e1138232457762))
+
+
+### Bug Fixes
+
+* DASH ondemand mpd - use SegmentBase for single-file text tracks in multi period manifest ([#1579](https://github.com/shaka-project/shaka-packager/issues/1579)) ([b35c3cc](https://github.com/shaka-project/shaka-packager/commit/b35c3ccab639c55dcac7c758c23e264fb42343a9))
+* hls default yes ([#1578](https://github.com/shaka-project/shaka-packager/issues/1578)) ([49f9d8e](https://github.com/shaka-project/shaka-packager/commit/49f9d8e27eb98ffd579e8ba0f855dcf0f0a48c8c))
+* **hls:** emit EXT-X-MEDIA tags in command-line order, not by GROUP-ID ([#1374](https://github.com/shaka-project/shaka-packager/issues/1374)) ([b1580dd](https://github.com/shaka-project/shaka-packager/commit/b1580dd18b804a5d082d50558da38bca4acdef6a))
+* normalize video_full_range_flag to 0 or 1 in av1 codec string ([#1586](https://github.com/shaka-project/shaka-packager/issues/1586)) ([f2fb7ef](https://github.com/shaka-project/shaka-packager/commit/f2fb7ef2a7af6c0eadc7e136939469586a2bdb4d))
+* pssh-box tool missing python_edition_defaults ([#1581](https://github.com/shaka-project/shaka-packager/issues/1581)) ([a528a6f](https://github.com/shaka-project/shaka-packager/commit/a528a6fc589d762eef0837622770b2f6d075cade))
+
+## [3.7.2](https://github.com/shaka-project/shaka-packager/compare/v3.7.1...v3.7.2) (2026-04-09)
+
+
+### Bug Fixes
+
+* Ignore already-deleted files when removing old segments ([#1566](https://github.com/shaka-project/shaka-packager/issues/1566)) ([8cc64e2](https://github.com/shaka-project/shaka-packager/commit/8cc64e22e2f2fd3c89b39e05a3277b4e4c636dcf))
+
+## [3.7.1](https://github.com/shaka-project/shaka-packager/compare/v3.7.0...v3.7.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* resolve relative paths for atomic write target ([#1564](https://github.com/shaka-project/shaka-packager/issues/1564)) ([90a392e](https://github.com/shaka-project/shaka-packager/commit/90a392ed8a30bc30697a3bec3115f4d2dff3a580))
+
+## [3.7.0](https://github.com/shaka-project/shaka-packager/compare/v3.6.1...v3.7.0) (2026-03-19)
+
+
+### Features
+
+* **cmake:** allow external declaration of version string ([#1552](https://github.com/shaka-project/shaka-packager/issues/1552)) ([8431c33](https://github.com/shaka-project/shaka-packager/commit/8431c336c29883479ee773f03871492038494ae5))
+* **cmake:** allow using system dependencies ([#1562](https://github.com/shaka-project/shaka-packager/issues/1562)) ([2c6790a](https://github.com/shaka-project/shaka-packager/commit/2c6790a8cb17677b9c9a64d1ab0f5d5c21a305a9))
+
+
+### Bug Fixes
+
+* correct WebM color range value mapping for vpcC and colr boxes ([#1554](https://github.com/shaka-project/shaka-packager/issues/1554)) ([34352c1](https://github.com/shaka-project/shaka-packager/commit/34352c16d3c068038ba7733af84e63abafcde864))
+* **deps:** update abseil-cpp to 20260107.1, protobuf to 33.5 ([#1553](https://github.com/shaka-project/shaka-packager/issues/1553)) ([27a1d71](https://github.com/shaka-project/shaka-packager/commit/27a1d71e3d31bea4893bd365b3aabe1031326bad))
+* **deps:** update to curl v8.19.0, mbedtls v3.6.5, libxml2 v2.15.2 ([#1563](https://github.com/shaka-project/shaka-packager/issues/1563)) ([1e5fa9a](https://github.com/shaka-project/shaka-packager/commit/1e5fa9ab283789fa5d741cf74b2039d97c4f883d))
+
+## [3.6.1](https://github.com/shaka-project/shaka-packager/compare/v3.6.0...v3.6.1) (2026-03-12)
+
+
+### Bug Fixes
+
+* DVB-Teletext: heartbeat mechanism and segment alignment with video/audio ([#1535](https://github.com/shaka-project/shaka-packager/issues/1535)) ([19dbd20](https://github.com/shaka-project/shaka-packager/commit/19dbd203b01bfecf646384e89f8a6da1ea343d35)), closes [#1428](https://github.com/shaka-project/shaka-packager/issues/1428) [#1401](https://github.com/shaka-project/shaka-packager/issues/1401) [#1355](https://github.com/shaka-project/shaka-packager/issues/1355) [#1430](https://github.com/shaka-project/shaka-packager/issues/1430)
+* HLS - remove CLOSED-CAPTIONS from EXT-X-I-FRAME-STREAM-INF ([#1551](https://github.com/shaka-project/shaka-packager/issues/1551)) ([16a2462](https://github.com/shaka-project/shaka-packager/commit/16a2462dd8a00fbcaec06e1aaf86b732ba0111eb))
+* Upgrade deps that are meant for older versions of CMake ([#1508](https://github.com/shaka-project/shaka-packager/issues/1508)) ([e46b759](https://github.com/shaka-project/shaka-packager/commit/e46b7591e1e4ff3444e306061746aa42589c84d7))
+
+## [3.6.0](https://github.com/shaka-project/shaka-packager/compare/v3.5.0...v3.6.0) (2026-03-11)
+
+
+### Features
+
+* add subsample encryption support for Dolby AC-4 ([#1522](https://github.com/shaka-project/shaka-packager/issues/1522)) ([3e854f4](https://github.com/shaka-project/shaka-packager/commit/3e854f4c907fdd4d0a5491304d9ad616f1a935bd))
+* DASH - Add signaling for CEA-608/708 captions ([#1549](https://github.com/shaka-project/shaka-packager/issues/1549)) ([51e25b5](https://github.com/shaka-project/shaka-packager/commit/51e25b56ee7ed3cf1302293045b249e4d25d76fe))
+* Switch VOD to live stream when event/live streams end ([#1541](https://github.com/shaka-project/shaka-packager/issues/1541)) ([ef8ed34](https://github.com/shaka-project/shaka-packager/commit/ef8ed345dee03fdad37e5b67958b2f5ccb984314)), closes [#321](https://github.com/shaka-project/shaka-packager/issues/321)
+
+
+### Bug Fixes
+
+* AdaptationSet ID inconsistency across periods ([#1547](https://github.com/shaka-project/shaka-packager/issues/1547)) ([6c7fb18](https://github.com/shaka-project/shaka-packager/commit/6c7fb18d3bd87a680034675fae60392ff56a8008))
+
+## [3.5.0](https://github.com/shaka-project/shaka-packager/compare/v3.4.2...v3.5.0) (2026-03-05)
+
+
+### Features
+
+* --local_targetduration ([#1519](https://github.com/shaka-project/shaka-packager/issues/1519)) ([4fad8d0](https://github.com/shaka-project/shaka-packager/commit/4fad8d01c0bdac3b927195ccd2aeaaf882c6a61a)), closes [#1510](https://github.com/shaka-project/shaka-packager/issues/1510)
+* Add CENC v1 support ([#1539](https://github.com/shaka-project/shaka-packager/issues/1539)) ([a792c56](https://github.com/shaka-project/shaka-packager/commit/a792c567c73d30bab52878375d129ac3344c09dc))
+* Add signaling for CEA-608/708 captions ([#1532](https://github.com/shaka-project/shaka-packager/issues/1532)) ([3aafed8](https://github.com/shaka-project/shaka-packager/commit/3aafed82b6ce8d47b028acafc547dcdf5030a749)), closes [#986](https://github.com/shaka-project/shaka-packager/issues/986)
+* Add support for EXT-X-PROGRAM-DATE-TIME tag ([#1521](https://github.com/shaka-project/shaka-packager/issues/1521)) ([73b4048](https://github.com/shaka-project/shaka-packager/commit/73b40484924108953f9e3318574d92af135f22ea)), closes [#365](https://github.com/shaka-project/shaka-packager/issues/365)
+* **ci:** Official multiarch docker images for x64 + arm64 ([#1490](https://github.com/shaka-project/shaka-packager/issues/1490)) ([9a6b2a5](https://github.com/shaka-project/shaka-packager/commit/9a6b2a50c07d61abf80e66478540948919d1ab2b))
+* MV-HEVC support for stereo video ([#1488](https://github.com/shaka-project/shaka-packager/issues/1488)) ([c22c379](https://github.com/shaka-project/shaka-packager/commit/c22c379123b683e8e4d231533d6ed24e134f6b61))
+
+
+### Bug Fixes
+
+* **ci:** Update release for trusted publishing to NPM ([#1544](https://github.com/shaka-project/shaka-packager/issues/1544)) ([4b3d1f9](https://github.com/shaka-project/shaka-packager/commit/4b3d1f98f9b62d3966385456b027c57e8ed0697d))
+* Fix color range info loss in WebM input to init mp4 packaging  ([#1517](https://github.com/shaka-project/shaka-packager/issues/1517)) ([8dd9a6d](https://github.com/shaka-project/shaka-packager/commit/8dd9a6d5882cb7c6d021442c09cc42463485b05f)), closes [#1515](https://github.com/shaka-project/shaka-packager/issues/1515)
+* Fix supplemental properties pointing to wrong AdaptationSet IDs ([#1520](https://github.com/shaka-project/shaka-packager/issues/1520)) ([5776b0b](https://github.com/shaka-project/shaka-packager/commit/5776b0b60d52c41732279e17fa2388d72d5a606d)), closes [#1500](https://github.com/shaka-project/shaka-packager/issues/1500)
+* handle EEXIST error in directory creation ([#1526](https://github.com/shaka-project/shaka-packager/issues/1526)) ([6144a49](https://github.com/shaka-project/shaka-packager/commit/6144a497016818b2042152eb96f248a8e0577f2b))
+* HLS identity key added inappropriately ([#1499](https://github.com/shaka-project/shaka-packager/issues/1499)) ([f6a1a35](https://github.com/shaka-project/shaka-packager/commit/f6a1a35e285d4edffa1a3f3cdb708aa85cfdfcab))
+* Move cipher block align to start of block ([#1540](https://github.com/shaka-project/shaka-packager/issues/1540)) ([e981da5](https://github.com/shaka-project/shaka-packager/commit/e981da5ad892f5008c71a85df5974714f76b3cc1))
+* Upgrade libpng to fix build on new macs ([#1507](https://github.com/shaka-project/shaka-packager/issues/1507)) ([7cd7e48](https://github.com/shaka-project/shaka-packager/commit/7cd7e48e9cfd008542c2f7c7c292bde15837a15e))
+
+## [3.4.2](https://github.com/shaka-project/shaka-packager/compare/v3.4.1...v3.4.2) (2025-01-17)
+
+
+### Bug Fixes
+
+* **ci:** Fix incomplete 3.4.1 release ([#1471](https://github.com/shaka-project/shaka-packager/issues/1471)) ([b882572](https://github.com/shaka-project/shaka-packager/commit/b882572b5458c93e1589ae04c0a79a3a10a75942))
+
+## [3.4.1](https://github.com/shaka-project/shaka-packager/compare/v3.4.0...v3.4.1) (2024-12-20)
+
+
+### Bug Fixes
+
+* Add "iw" variant of Hebrew language code ([#1458](https://github.com/shaka-project/shaka-packager/issues/1458)) ([df745bd](https://github.com/shaka-project/shaka-packager/commit/df745bdf1ac7609779d3cecfda01c71090150983)), closes [#1457](https://github.com/shaka-project/shaka-packager/issues/1457)
+
+## [3.4.0](https://github.com/shaka-project/shaka-packager/compare/v3.3.0...v3.4.0) (2024-11-11)
+
+
+### Features
+
+* Add option to ignore HTTP output failures ([#1449](https://github.com/shaka-project/shaka-packager/issues/1449)) ([3fdc807](https://github.com/shaka-project/shaka-packager/commit/3fdc807ed3a8fbe55b58037685c6528313485bf6))
+
+## [3.3.0](https://github.com/shaka-project/shaka-packager/compare/v3.2.1...v3.3.0) (2024-10-25)
+
+
+### Features
+
+* Add IAMF support ([#1416](https://github.com/shaka-project/shaka-packager/issues/1416)) ([dc6196d](https://github.com/shaka-project/shaka-packager/commit/dc6196d3d16cf532bf81721881624490a5a474e2)), closes [#1415](https://github.com/shaka-project/shaka-packager/issues/1415)
+* EXT-X-SESSION-KEY support ([#1427](https://github.com/shaka-project/shaka-packager/issues/1427)) ([d88ed27](https://github.com/shaka-project/shaka-packager/commit/d88ed2798cbe69197b88b394de72551716f51ac9)), closes [#36](https://github.com/shaka-project/shaka-packager/issues/36)
+* **http:** Add DELETE method support ([#1442](https://github.com/shaka-project/shaka-packager/issues/1442)) ([ddeacb2](https://github.com/shaka-project/shaka-packager/commit/ddeacb2525bfaf1c7301d415109a8149718c4f91))
+
+
+### Bug Fixes
+
+* **http:** Fix "Failed sending data to the peer" errors ([#1443](https://github.com/shaka-project/shaka-packager/issues/1443)) ([2c9d100](https://github.com/shaka-project/shaka-packager/commit/2c9d100d445f8db82c811c011a2c2e9078e242a2))
+
+## [3.2.1](https://github.com/shaka-project/shaka-packager/compare/v3.2.0...v3.2.1) (2024-10-02)
+
+
+### Bug Fixes
+
+* Add Missing Dash Roles to RoleFromString function ([#1418](https://github.com/shaka-project/shaka-packager/issues/1418)) ([#1419](https://github.com/shaka-project/shaka-packager/issues/1419)) ([9cb00e9](https://github.com/shaka-project/shaka-packager/commit/9cb00e91ab0d081b1f2132abaad7c23ef15047b7))
+* Break header installation for the shared library ([#1407](https://github.com/shaka-project/shaka-packager/issues/1407)) ([b5c2cb8](https://github.com/shaka-project/shaka-packager/commit/b5c2cb8b73701911f765a149dd37521026e7ed2a)), closes [#1406](https://github.com/shaka-project/shaka-packager/issues/1406)
+* Embed full python protobuf library ([#1438](https://github.com/shaka-project/shaka-packager/issues/1438)) ([f07fd0d](https://github.com/shaka-project/shaka-packager/commit/f07fd0d997b0c84bde78d2dd9a62bdf0fac19ec1)), closes [#1436](https://github.com/shaka-project/shaka-packager/issues/1436)
+
 ## [3.2.0](https://github.com/shaka-project/shaka-packager/compare/v3.1.0...v3.2.0) (2024-05-11)
 
 

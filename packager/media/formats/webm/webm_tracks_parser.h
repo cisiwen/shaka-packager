@@ -5,6 +5,7 @@
 #ifndef PACKAGER_MEDIA_FORMATS_WEBM_WEBM_TRACKS_PARSER_H_
 #define PACKAGER_MEDIA_FORMATS_WEBM_WEBM_TRACKS_PARSER_H_
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <set>
@@ -15,6 +16,7 @@
 #include <packager/media/base/audio_stream_info.h>
 #include <packager/media/base/text_track_config.h>
 #include <packager/media/base/video_stream_info.h>
+#include <packager/media/codecs/vp_codec_configuration_record.h>
 #include <packager/media/formats/webm/webm_audio_client.h>
 #include <packager/media/formats/webm/webm_content_encodings_client.h>
 #include <packager/media/formats/webm/webm_parser.h>
@@ -65,9 +67,7 @@ class WebMTracksParser : public WebMParserClient {
 
   typedef std::map<int, TextTrackConfig> TextTracks;
 
-  const TextTracks& text_tracks() const {
-    return text_tracks_;
-  }
+  const TextTracks& text_tracks() const { return text_tracks_; }
 
   const VPCodecConfigurationRecord& vp_config() const { return vp_config_; }
 

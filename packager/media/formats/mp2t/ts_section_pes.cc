@@ -4,10 +4,12 @@
 
 #include <packager/media/formats/mp2t/ts_section_pes.h>
 
+#include <cstdint>
+#include <memory>
+
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
 #include <packager/media/base/bit_reader.h>
 #include <packager/media/base/timestamp.h>
 #include <packager/media/formats/mp2t/es_parser.h>
@@ -101,8 +103,7 @@ TsSectionPes::TsSectionPes(std::unique_ptr<EsParser> es_parser)
   DCHECK(es_parser_);
 }
 
-TsSectionPes::~TsSectionPes() {
-}
+TsSectionPes::~TsSectionPes() {}
 
 bool TsSectionPes::Parse(bool payload_unit_start_indicator,
                          const uint8_t* buf,
@@ -168,8 +169,7 @@ bool TsSectionPes::Emit(bool emit_for_unknown_size) {
 
   // Check whether we have enough data to start parsing.
   int pes_packet_length =
-      (static_cast<int>(raw_pes[4]) << 8) |
-      (static_cast<int>(raw_pes[5]));
+      (static_cast<int>(raw_pes[4]) << 8) | (static_cast<int>(raw_pes[5]));
   if ((pes_packet_length == 0 && !emit_for_unknown_size) ||
       (pes_packet_length != 0 && raw_pes_size < pes_packet_length + 6)) {
     // Wait for more data to come either because:

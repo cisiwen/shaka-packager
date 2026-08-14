@@ -11,15 +11,15 @@
 #ifndef MPD_BASE_MPD_BUILDER_H_
 #define MPD_BASE_MPD_BUILDER_H_
 
-#include <chrono>
+#include <cstdint>
 #include <list>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include <libxml/tree.h>
 
-#include <packager/macros/classes.h>
 #include <packager/mpd/base/mpd_options.h>
 #include <packager/mpd/base/xml/xml_node.h>
 #include <packager/utils/clock.h>
@@ -54,6 +54,11 @@ class MpdBuilder {
   virtual Period* GetOrCreatePeriod(double start_time_in_seconds);
 
   virtual Period* GetPeriodForEvents(double start_time_in_seconds);
+
+  /// Convert the stream from a dynamic Live/EVENT to a static VOD stream.
+  /// This is a no-op for VOD streams.
+  void FinalizeDynamicMpd();
+
   /// Writes the MPD to the given string.
   /// @param[out] output is an output string where the MPD gets written.
   /// @return true on success, false otherwise.

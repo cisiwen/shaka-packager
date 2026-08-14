@@ -7,6 +7,7 @@
 #ifndef PACKAGER_HLS_BASE_SIMPLE_HLS_NOTIFIER_H_
 #define PACKAGER_HLS_BASE_SIMPLE_HLS_NOTIFIER_H_
 
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
@@ -14,12 +15,14 @@
 #include <vector>
 
 #include <absl/synchronization/mutex.h>
+#include <absl/time/time.h>
 
 #include <packager/hls/base/hls_notifier.h>
 #include <packager/hls/base/master_playlist.h>
 #include <packager/hls/base/media_playlist.h>
 #include <packager/hls_params.h>
 #include <packager/macros/classes.h>
+#include <packager/mpd/base/media_info.pb.h>
 
 namespace shaka {
 namespace hls {
@@ -70,8 +73,14 @@ class SimpleHlsNotifier : public HlsNotifier {
       const std::vector<uint8_t>& system_id,
       const std::vector<uint8_t>& iv,
       const std::vector<uint8_t>& protection_system_specific_data) override;
+
+  bool NotifyEndOfStream() override;
+
   bool Flush() override;
   /// }@
+
+ protected:
+  const absl::Time& reference_time() const { return reference_time_; }
 
  private:
   friend class SimpleHlsNotifierTest;
@@ -83,6 +92,7 @@ class SimpleHlsNotifier : public HlsNotifier {
 
   std::string master_playlist_dir_;
   int32_t target_duration_ = 0;
+  bool end_stream = false;
 
   std::unique_ptr<MediaPlaylistFactory> media_playlist_factory_;
   std::unique_ptr<MasterPlaylist> master_playlist_;
@@ -94,6 +104,7 @@ class SimpleHlsNotifier : public HlsNotifier {
   uint32_t sequence_number_ = 0;
 
   absl::Mutex lock_;
+  absl::Time reference_time_ = absl::InfinitePast();
 
   DISALLOW_COPY_AND_ASSIGN(SimpleHlsNotifier);
 };

@@ -7,14 +7,13 @@
 #ifndef PACKAGER_MEDIA_BASE_PROTECTION_SYSTEM_SPECIFIC_INFO_H_
 #define PACKAGER_MEDIA_BASE_PROTECTION_SYSTEM_SPECIFIC_INFO_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 #include <absl/log/check.h>
-#include <absl/log/log.h>
 
-#include <packager/crypto_params.h>
 
 namespace shaka {
 namespace media {
@@ -26,10 +25,9 @@ struct ProtectionSystemSpecificInfo {
   /// Parses multiple PSSH boxes from @a data.  These boxes should be
   /// concatenated together.  Any non-PSSH box is an error.
   /// @return true on success; false on failure.
-  static bool ParseBoxes(
-      const uint8_t* data,
-      size_t data_size,
-      std::vector<ProtectionSystemSpecificInfo>* pssh_boxes);
+  static bool ParseBoxes(const uint8_t* data,
+                         size_t data_size,
+                         std::vector<ProtectionSystemSpecificInfo>* pssh_boxes);
 };
 
 class PsshBoxBuilder {

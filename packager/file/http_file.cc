@@ -6,17 +6,31 @@
 
 #include <packager/file/http_file.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <ios>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include <absl/flags/declare.h>
 #include <absl/flags/flag.h>
 #include <absl/log/check.h>
 #include <absl/log/log.h>
+#include <absl/log/vlog_is_on.h>
 #include <absl/strings/escaping.h>
 #include <absl/strings/str_format.h>
 #include <curl/curl.h>
+#include <curl/easy.h>
 
+#include <packager/file.h>
+#include <packager/file/file_closer.h>
+#include <packager/file/io_cache.h>
 #include <packager/file/thread_pool.h>
 #include <packager/macros/compiler.h>
-#include <packager/macros/logging.h>
+#include <packager/status.h>
 #include <packager/version/version.h>
 
 ABSL_FLAG(std::string,
@@ -45,6 +59,11 @@ ABSL_FLAG(bool,
           false,
           "Disable peer verification. This is needed to talk to servers "
           "without valid certificates.");
+ABSL_FLAG(bool,
+          ignore_http_output_failures,
+          false,
+          "Ignore HTTP output failures. Can help recover from live stream "
+          "upload errors.");
 
 ABSL_DECLARE_FLAG(uint64_t, io_cache_size);
 
@@ -135,13 +154,9 @@ int CurlDebugCallback(CURL* /* handle */,
 
 class LibCurlInitializer {
  public:
-  LibCurlInitializer() {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-  }
+  LibCurlInitializer() { curl_global_init(CURL_GLOBAL_DEFAULT); }
 
-  ~LibCurlInitializer() {
-    curl_global_cleanup();
-  }
+  ~LibCurlInitializer() { curl_global_cleanup(); }
 
   LibCurlInitializer(const LibCurlInitializer&) = delete;
   LibCurlInitializer& operator=(const LibCurlInitializer&) = delete;
@@ -174,6 +189,7 @@ HttpFile::HttpFile(HttpMethod method,
       upload_content_type_(upload_content_type),
       timeout_in_seconds_(timeout_in_seconds),
       method_(method),
+      isUpload_(method == HttpMethod::kPut || method == HttpMethod::kPost),
       download_cache_(absl::GetFlag(FLAGS_io_cache_size)),
       upload_cache_(absl::GetFlag(FLAGS_io_cache_size)),
       curl_(curl_easy_init()),
@@ -201,8 +217,7 @@ HttpFile::HttpFile(HttpMethod method,
       !AppendHeader("Content-Type: " + upload_content_type_, &temp_headers)) {
     return;
   }
-  if (method != HttpMethod::kGet &&
-      !AppendHeader("Transfer-Encoding: chunked", &temp_headers)) {
+  if (isUpload_ && !AppendHeader("Transfer-Encoding: chunked", &temp_headers)) {
     return;
   }
   for (const auto& item : headers) {
@@ -214,6 +229,16 @@ HttpFile::HttpFile(HttpMethod method,
 }
 
 HttpFile::~HttpFile() {}
+
+// static
+bool HttpFile::Delete(const std::string& url) {
+  std::unique_ptr<HttpFile, FileCloser> file(
+      new HttpFile(HttpMethod::kDelete, url));
+  if (!file->Open()) {
+    return false;
+  }
+  return file.release()->Close();
+}
 
 bool HttpFile::Open() {
   VLOG(2) << "Opening " << url_;
@@ -246,7 +271,7 @@ Status HttpFile::CloseWithStatus() {
   const Status result = status_;
   LOG_IF(ERROR, !result.ok()) << "HttpFile request failed: " << result;
   delete this;
-  return result;
+  return absl::GetFlag(FLAGS_ignore_http_output_failures) ? Status::OK : result;
 }
 
 bool HttpFile::Close() {
@@ -311,7 +336,10 @@ void HttpFile::SetupRequest() {
       curl_easy_setopt(curl, CURLOPT_POST, 1L);
       break;
     case HttpMethod::kPut:
-      curl_easy_setopt(curl, CURLOPT_PUT, 1L);
+      curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+      break;
+    case HttpMethod::kDelete:
+      curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
       break;
   }
 
@@ -322,7 +350,7 @@ void HttpFile::SetupRequest() {
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &CurlWriteCallback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &download_cache_);
-  if (method_ != HttpMethod::kGet) {
+  if (isUpload_) {
     curl_easy_setopt(curl, CURLOPT_READFUNCTION, &CurlReadCallback);
     curl_easy_setopt(curl, CURLOPT_READDATA, &upload_cache_);
   }

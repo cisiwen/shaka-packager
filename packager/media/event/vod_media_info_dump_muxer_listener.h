@@ -11,11 +11,13 @@
 #ifndef PACKAGER_MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_VOD_MEDIA_INFO_DUMP_MUXER_LISTENER_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <packager/macros/classes.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/event/muxer_listener.h>
 
@@ -27,7 +29,8 @@ namespace media {
 
 class VodMediaInfoDumpMuxerListener : public MuxerListener {
  public:
-  VodMediaInfoDumpMuxerListener(const std::string& output_file_name, bool use_segment_list);
+  VodMediaInfoDumpMuxerListener(const std::string& output_file_name,
+                                bool use_segment_list);
   ~VodMediaInfoDumpMuxerListener() override;
 
   /// @name MuxerListener implementation overrides.
@@ -67,7 +70,7 @@ class VodMediaInfoDumpMuxerListener : public MuxerListener {
   static bool WriteMediaInfoToFile(const MediaInfo& media_info,
                                    const std::string& output_file_path);
 
-  void set_use_segment_list(bool value) {use_segment_list_ = value;}
+  void set_use_segment_list(bool value) { use_segment_list_ = value; }
 
  private:
   std::string output_file_name_;

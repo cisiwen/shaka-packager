@@ -7,17 +7,24 @@
 #include <packager/media/event/mpd_notify_muxer_listener.h>
 
 #include <cmath>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 
 #include <packager/macros/compiler.h>
-#include <packager/media/base/audio_stream_info.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/protection_system_specific_info.h>
-#include <packager/media/base/video_stream_info.h>
+#include <packager/media/base/stream_info.h>
+#include <packager/media/event/event_info.h>
 #include <packager/media/event/muxer_listener_internal.h>
 #include <packager/mpd/base/media_info.pb.h>
 #include <packager/mpd/base/mpd_notifier.h>
+#include <packager/mpd/base/mpd_options.h>
 
 namespace shaka {
 namespace media {
@@ -66,13 +73,9 @@ void MpdNotifyMuxerListener::OnMediaStart(const MuxerOptions& muxer_options,
                                           int32_t time_scale,
                                           ContainerType container_type) {
   std::unique_ptr<MediaInfo> media_info(new MediaInfo());
-  LOG(INFO)<<"MpdNotifyMuxerListener::OnMediaStart "<<StreamTypeToString(stream_info.stream_type());
-  if (!internal::GenerateMediaInfo(muxer_options,
-                                   stream_info,
-                                   time_scale,
-                                   container_type,
-                                   media_info.get())) {
-    LOG(ERROR) <<"Failed to generate MediaInfo from input.";
+  if (!internal::GenerateMediaInfo(muxer_options, stream_info, time_scale,
+                                   container_type, media_info.get())) {
+    LOG(ERROR) << "Failed to generate MediaInfo from input.";
     return;
   }
   for (const std::string& accessibility : accessibilities_)
@@ -95,7 +98,8 @@ void MpdNotifyMuxerListener::OnMediaStart(const MuxerOptions& muxer_options,
   if (is_encrypted_) {
     internal::SetContentProtectionFields(protection_scheme_, default_key_id_,
                                          key_system_info_, media_info.get());
-    media_info->mutable_protected_content()->set_include_mspr_pro(mpd_notifier_->include_mspr_pro());
+    media_info->mutable_protected_content()->set_include_mspr_pro(
+        mpd_notifier_->include_mspr_pro());
   }
 
   // The content may be splitted into multiple files, but their MediaInfo
@@ -152,10 +156,15 @@ void MpdNotifyMuxerListener::OnMediaEnd(const MediaRanges& media_ranges,
                                         float duration_seconds) {
   if (mpd_notifier_->dash_profile() == DashProfile::kLive) {
     DCHECK(event_info_.empty());
-    // TODO(kqyang): Set mpd duration to |duration_seconds|, which is more
-    // accurate than the duration coded in the original media header.
+
     if (mpd_notifier_->mpd_type() == MpdType::kStatic)
       mpd_notifier_->Flush();
+    else {
+      // Set mpd duration to |duration_seconds|, which is more
+      // accurate than the duration coded in the original media header.
+      media_info_->set_media_duration_seconds(duration_seconds);
+      mpd_notifier_->NotifyEndOfStream();
+    }
     return;
   }
 

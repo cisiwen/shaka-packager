@@ -7,9 +7,20 @@
 #ifndef PACKAGER_MEDIA_CRYPTO_ENCRYPTION_HANDLER_H_
 #define PACKAGER_MEDIA_CRYPTO_ENCRYPTION_HANDLER_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <packager/crypto_params.h>
+#include <packager/media/base/encryption_config.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/key_source.h>
 #include <packager/media/base/media_handler.h>
+#include <packager/media/base/media_sample.h>
+#include <packager/media/base/stream_info.h>
+#include <packager/status.h>
 
 namespace shaka {
 namespace media {
@@ -44,7 +55,7 @@ class EncryptionHandler : public MediaHandler {
   // Processes media sample and encrypts it if needed.
   Status ProcessMediaSample(std::shared_ptr<const MediaSample> clear_sample);
 
-  void SetupProtectionPattern(StreamType stream_type);
+  void SetupProtectionPattern(StreamType stream_type, Codec codec);
   bool CreateEncryptor(const EncryptionKey& encryption_key);
   // Encrypt an E-AC3 frame with size |source_size| according to SAMPLE-AES
   // specification. |dest| should have at least |source_size| bytes.

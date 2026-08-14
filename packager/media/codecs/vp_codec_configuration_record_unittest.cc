@@ -6,7 +6,13 @@
 
 #include <packager/media/codecs/vp_codec_configuration_record.h>
 
+#include <cstdint>
+#include <iterator>
+#include <vector>
+
 #include <gtest/gtest.h>
+
+#include <packager/media/base/stream_info.h>
 
 namespace shaka {
 namespace media {
@@ -36,7 +42,10 @@ TEST(VPCodecConfigurationRecordTest, Parse) {
 
 TEST(VPCodecConfigurationRecordTest, ParseWithInsufficientData) {
   const uint8_t kVpCodecConfigurationData[] = {
-      0x01, 0x14, 0xA2, 0x02,
+      0x01,
+      0x14,
+      0xA2,
+      0x02,
   };
 
   VPCodecConfigurationRecord vp_config;
@@ -61,10 +70,7 @@ TEST(VPCodecConfigurationRecordTest, WriteMP4) {
 
 TEST(VPCodecConfigurationRecordTest, WriteWebM) {
   const uint8_t kExpectedVpCodecConfigurationData[] = {
-      0x01, 0x01, 0x02,
-      0x02, 0x01, 0x01,
-      0x03, 0x01, 0x08,
-      0x04, 0x01, 0x02,
+      0x01, 0x01, 0x02, 0x02, 0x01, 0x01, 0x03, 0x01, 0x08, 0x04, 0x01, 0x02,
   };
   VPCodecConfigurationRecord vp_config(0x02, 0x01, 0x08, 0x02, true, 0x03, 0x04,
                                        0x05, std::vector<uint8_t>());

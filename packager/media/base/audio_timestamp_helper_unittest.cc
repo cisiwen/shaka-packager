@@ -4,6 +4,8 @@
 
 #include <packager/media/base/audio_timestamp_helper.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
 
 #include <gtest/gtest.h>
@@ -36,8 +38,8 @@ class AudioTimestampHelperTest : public ::testing::Test {
 
   void TestGetFramesToTargetRange(int frame_count, int start, int end) {
     for (int i = start; i <= end; ++i) {
-      EXPECT_EQ(frame_count, FramesToTarget(i)) << " Failure for timestamp "
-                                                << i << " us.";
+      EXPECT_EQ(frame_count, FramesToTarget(i))
+          << " Failure for timestamp " << i << " us.";
     }
   }
 
@@ -73,7 +75,6 @@ TEST_F(AudioTimestampHelperTest, Basic) {
   EXPECT_EQ(113, helper_.GetTimestamp());
   EXPECT_TRUE(timestamp_1 == helper_.GetTimestamp());
 }
-
 
 TEST_F(AudioTimestampHelperTest, GetDuration) {
   helper_.SetBaseTimestamp(100);

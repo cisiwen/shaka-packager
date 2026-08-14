@@ -10,6 +10,9 @@
 #include <filesystem>
 #include <list>
 #include <string>
+#include <vector>
+
+#include <packager/cea_caption.h>
 
 namespace shaka {
 namespace hls {
@@ -28,7 +31,9 @@ class MasterPlaylist {
   MasterPlaylist(const std::filesystem::path& file_name,
                  const std::string& default_audio_language,
                  const std::string& default_text_language,
-                 const bool is_independent_segments);
+                 const std::vector<CeaCaption>& closed_captions,
+                 const bool is_independent_segments,
+                 const bool create_session_keys = false);
   virtual ~MasterPlaylist();
 
   /// Writes Master Playlist to output_dir + <name of playlist>.
@@ -52,7 +57,9 @@ class MasterPlaylist {
   const std::filesystem::path file_name_;
   const std::string default_audio_language_;
   const std::string default_text_language_;
+  const std::vector<CeaCaption> closed_captions_;
   bool is_independent_segments_;
+  bool create_session_keys_;
 };
 
 }  // namespace hls

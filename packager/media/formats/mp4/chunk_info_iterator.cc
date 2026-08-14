@@ -7,10 +7,13 @@
 #include <packager/media/formats/mp4/chunk_info_iterator.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
+#include <vector>
 
 #include <absl/log/check.h>
-#include <absl/log/log.h>
+
+#include <packager/media/formats/mp4/box_definitions.h>
 
 namespace shaka {
 namespace media {
@@ -55,8 +58,7 @@ uint32_t ChunkInfoIterator::NumSamples(uint32_t start_chunk,
   uint32_t last_chunk = 0;
   uint32_t num_samples = 0;
   for (std::vector<ChunkInfo>::const_iterator it = chunk_info_table_.begin();
-       it != chunk_info_table_.end();
-       ++it) {
+       it != chunk_info_table_.end(); ++it) {
     last_chunk = (it + 1 == chunk_info_table_.end())
                      ? std::numeric_limits<uint32_t>::max()
                      : (it + 1)->first_chunk - 1;

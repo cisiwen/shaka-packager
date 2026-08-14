@@ -7,14 +7,22 @@
 #include <packager/media/base/raw_key_source.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/strings/escaping.h>
 
+#include <packager/crypto_params.h>
 #include <packager/macros/compiler.h>
 #include <packager/macros/status.h>
 #include <packager/media/base/key_source.h>
+#include <packager/media/base/protection_system_specific_info.h>
+#include <packager/status.h>
 #include <packager/utils/bytes_to_string_view.h>
 
 namespace {
@@ -124,7 +132,8 @@ std::unique_ptr<RawKeySource> RawKeySource::Create(
                  << "', must be 16 bytes.";
       return std::unique_ptr<RawKeySource>();
     }
-    if (!key_pair.iv.empty() && key_pair.iv.size() != 8 && key_pair.iv.size() != 16) {
+    if (!key_pair.iv.empty() && key_pair.iv.size() != 8 &&
+        key_pair.iv.size() != 16) {
       LOG(ERROR) << "Invalid IV '" << key_pair.iv.size()
                  << "', must be 8 or 16 bytes.";
       return std::unique_ptr<RawKeySource>();

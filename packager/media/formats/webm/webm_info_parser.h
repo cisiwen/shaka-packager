@@ -6,6 +6,8 @@
 #define PACKAGER_MEDIA_FORMATS_WEBM_WEBM_INFO_PARSER_H_
 
 #include <chrono>
+#include <cstdint>
+#include <string>
 
 #include <packager/macros/classes.h>
 #include <packager/media/formats/webm/webm_parser.h>

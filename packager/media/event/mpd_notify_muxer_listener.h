@@ -9,10 +9,13 @@
 #ifndef PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/event/event_info.h>
 #include <packager/media/event/muxer_listener.h>

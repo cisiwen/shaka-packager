@@ -4,12 +4,21 @@
 
 #include <packager/media/formats/mp2t/mp2t_media_parser.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <functional>
+#include <ios>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
+#include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
+#include <packager/media/base/audio_stream_info.h>
+#include <packager/media/base/media_parser.h>
 #include <packager/media/base/media_sample.h>
 #include <packager/media/base/stream_info.h>
 #include <packager/media/base/text_sample.h>
@@ -115,10 +124,10 @@ bool PidState::PushTsPacket(const TsPacket& ts_packet) {
     // TODO(tinskip): Handle discontinuity better.
     return false;
   }
-  bool status = section_parser_->Parse(
-      ts_packet.payload_unit_start_indicator(),
-      ts_packet.payload(),
-      ts_packet.payload_size());
+
+  bool status =
+      section_parser_->Parse(ts_packet.payload_unit_start_indicator(),
+                             ts_packet.payload(), ts_packet.payload_size());
 
   // At the minimum, when parsing failed, auto reset the section parser.
   // Components that use the Mp2tMediaParser can take further action if needed.
@@ -159,9 +168,7 @@ void PidState::ResetState() {
 }
 
 Mp2tMediaParser::Mp2tMediaParser()
-    : sbr_in_mimetype_(false),
-      is_initialized_(false) {
-}
+    : sbr_in_mimetype_(false), is_initialized_(false) {}
 
 Mp2tMediaParser::~Mp2tMediaParser() {}
 
@@ -239,8 +246,7 @@ bool Mp2tMediaParser::Parse(const uint8_t* buf, int size) {
                         << ts_packet->continuity_counter();*/
     // Parse the section.
     auto it = pids_.find(ts_packet->pid());
-    if (it == pids_.end() &&
-        ts_packet->pid() == TsSection::kPidPat) {
+    if (it == pids_.end() && ts_packet->pid() == TsSection::kPidPat) {
       // Create the PAT state here if needed.
       std::unique_ptr<TsSection> pat_section_parser(new TsSectionPat(
           std::bind(&Mp2tMediaParser::RegisterPmt, this, std::placeholders::_1,
@@ -267,8 +273,7 @@ bool Mp2tMediaParser::Parse(const uint8_t* buf, int size) {
 
 void Mp2tMediaParser::RegisterPmt(int program_number, int pmt_pid) {
   DVLOG(1) << "RegisterPmt:"
-           << " program_number=" << program_number
-           << " pmt_pid=" << pmt_pid;
+           << " program_number=" << program_number << " pmt_pid=" << pmt_pid;
 
   // Only one TS program is allowed. Ignore the incoming program map table,
   // if there is already one registered.
@@ -382,6 +387,11 @@ void Mp2tMediaParser::RegisterPes(int pmt_pid,
     auto info = std::make_shared<SCTE35StreamInfo>(pes_pid, kMpeg2Timescale, kInfiniteDuration, kCodecSCTE35, "", "", "");
     on_new_stream(info);
   }
+
+  // Keep track of text pids
+  if (pid_type == PidState::kPidTextPes) {
+    text_pids_.insert(pes_pid);
+  }
 }
 
 void Mp2tMediaParser::OnNewStreamInfo(
@@ -470,6 +480,21 @@ void Mp2tMediaParser::OnEmitMediaSample(
                << ").";
     return;
   }
+
+  // Use video DTS (or PTS if DTS not available) for video streams
+  // Use audio PTS for audio streams
+  int64_t timestamp_for_heartbeat = new_sample->pts();
+  if (pid_state->second->pid_type() == PidState::kPidVideoPes) {
+    // For video, prefer DTS if available, otherwise use PTS
+    // DTS is <= PTS and typically not present if DTS == PTS.
+    timestamp_for_heartbeat = new_sample->dts();
+    if (timestamp_for_heartbeat == 0) {
+      timestamp_for_heartbeat = new_sample->pts();
+    }
+  }
+  // For audio and other streams, use PTS (default already set above)
+
+  update_biggest_pts(timestamp_for_heartbeat);
   pid_state->second->media_sample_queue_.push_back(std::move(new_sample));
 }
 
@@ -483,10 +508,15 @@ void Mp2tMediaParser::OnEmitTextSample(uint32_t pes_pid,
   // Add the sample to the appropriate PID sample queue.
   auto pid_state = pids_.find(pes_pid);
   if (pid_state == pids_.end()) {
-    LOG(ERROR) << "PID State for new sample not found (pid = "
-               << pes_pid << ").";
+    LOG(ERROR) << "PID State for new sample not found (pid = " << pes_pid
+               << ").";
     return;
   }
+
+  // Don't remove heartbeats - they need to be emitted to trigger segment
+  // generation Even when real text cues arrive, heartbeats provide timing
+  // information for proper segment boundaries, especially for sparse teletext
+  // streams
   pid_state->second->text_sample_queue_.push_back(std::move(new_sample));
 }
 
@@ -521,8 +551,16 @@ bool Mp2tMediaParser::EmitRemainingSamples() {
     }
     pid_pair.second->media_sample_queue_.clear();
 
+    DVLOG(2) << "EmitRemainingSamples: text_sample_queue_ size="
+             << pid_pair.second->text_sample_queue_.size();
     for (auto sample : pid_pair.second->text_sample_queue_) {
-      RCHECK(new_text_sample_cb_(pid_pair.first, sample));
+      DVLOG(2) << "Emitting text sample: role="
+               << static_cast<int>(sample->role())
+               << " pts=" << sample->start_time()
+               << " is_empty=" << sample->is_empty();
+      bool result = new_text_sample_cb_(pid_pair.first, sample);
+      DVLOG(3) << "new_text_sample_cb_ returned: " << result;
+      RCHECK(result);
     }
     pid_pair.second->text_sample_queue_.clear();
     for (auto sample : pid_pair.second->scte35_event_queue_) {
@@ -532,6 +570,28 @@ bool Mp2tMediaParser::EmitRemainingSamples() {
   }
 
   return true;
+}
+
+void Mp2tMediaParser::update_biggest_pts(int64_t pts) {
+  if (pts >= biggest_pts_ + 9000) {  // 100ms larger than last biggest
+    biggest_pts_ = pts;
+    for (auto pid : text_pids_) {
+      auto pid_state = pids_.find(pid);
+      if (pid_state == pids_.end()) {
+        LOG(ERROR) << "PID State for new sample not found (text pid = " << pid
+                   << " )";
+        continue;
+      }
+      TextSettings text_settings;
+      auto heartbeat = std::make_shared<TextSample>(
+          "", pts, pts, text_settings, TextFragment({}, ""),
+          TextSampleRole::kMediaHeartBeat);
+      // Set sub_stream_index to match the PID so heartbeats pass through
+      // sub-stream filtering
+      heartbeat->set_sub_stream_index(pid);
+      OnEmitTextSample(uint32_t(pid), heartbeat);
+    }
+  }
 }
 
 }  // namespace mp2t

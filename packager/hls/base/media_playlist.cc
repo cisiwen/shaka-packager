@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <iterator>
+#include <list>
 #include <memory>
 #include <iostream>
 #include <optional>
@@ -17,15 +21,20 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
-#include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
+#include <absl/time/civil_time.h>
+#include <absl/time/time.h>
 
 #include <packager/file.h>
 #include <packager/hls/base/tag.h>
+#include <packager/hls_params.h>
 #include <packager/macros/logging.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/language_utils.h>
 #include <packager/media/base/muxer_util.h>
 #include <packager/version/version.h>
@@ -228,6 +237,11 @@ std::string CreatePlaylistHeader(
   return header;
 }
 
+}  // namespace
+
+HlsEntry::HlsEntry(HlsEntry::EntryType type) : type_(type) {}
+HlsEntry::~HlsEntry() {}
+
 class SegmentInfoEntry : public HlsEntry {
  public:
   // If |use_byte_range| true then this will append EXT-X-BYTERANGE
@@ -296,28 +310,60 @@ std::string SegmentInfoEntry::ToString() {
   return result;
 }
 
-class EncryptionInfoEntry : public HlsEntry {
+class DiscontinuityEntry : public HlsEntry {
  public:
-  EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
-                      const std::string& url,
-                      const std::string& key_id,
-                      const std::string& iv,
-                      const std::string& key_format,
-                      const std::string& key_format_versions);
+  DiscontinuityEntry();
 
   std::string ToString() override;
 
  private:
-  EncryptionInfoEntry(const EncryptionInfoEntry&) = delete;
-  EncryptionInfoEntry& operator=(const EncryptionInfoEntry&) = delete;
-
-  const MediaPlaylist::EncryptionMethod method_;
-  const std::string url_;
-  const std::string key_id_;
-  const std::string iv_;
-  const std::string key_format_;
-  const std::string key_format_versions_;
+  DiscontinuityEntry(const DiscontinuityEntry&) = delete;
+  DiscontinuityEntry& operator=(const DiscontinuityEntry&) = delete;
 };
+
+DiscontinuityEntry::DiscontinuityEntry()
+    : HlsEntry(HlsEntry::EntryType::kExtDiscontinuity) {}
+
+std::string DiscontinuityEntry::ToString() {
+  return "#EXT-X-DISCONTINUITY";
+}
+
+ProgramDateTimeEntry::ProgramDateTimeEntry(const absl::Time& program_time)
+    : HlsEntry(HlsEntry::EntryType::kProgramDateTime),
+      program_time_(program_time) {}
+
+std::string ProgramDateTimeEntry::ToString() {
+  absl::CivilSecond cs =
+      absl::ToCivilSecond(program_time_, absl::UTCTimeZone());
+
+  int64_t total_ms = absl::ToUnixMillis(program_time_);
+  int ms = static_cast<int>(total_ms % 1000);
+  if (ms < 0)
+    ms += 1000;  // correction for possible negative times
+
+  return absl::StrFormat(
+      "#EXT-X-PROGRAM-DATE-TIME:%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", cs.year(),
+      cs.month(), cs.day(), cs.hour(), cs.minute(), cs.second(), ms);
+}
+
+class PlacementOpportunityEntry : public HlsEntry {
+ public:
+  PlacementOpportunityEntry();
+
+  std::string ToString() override;
+
+ private:
+  PlacementOpportunityEntry(const PlacementOpportunityEntry&) = delete;
+  PlacementOpportunityEntry& operator=(const PlacementOpportunityEntry&) =
+      delete;
+};
+
+PlacementOpportunityEntry::PlacementOpportunityEntry()
+    : HlsEntry(HlsEntry::EntryType::kExtPlacementOpportunity) {}
+
+std::string PlacementOpportunityEntry::ToString() {
+  return "#EXT-X-PLACEMENT-OPPORTUNITY";
+}
 
 EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
                                          const std::string& url,
@@ -334,8 +380,14 @@ EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
       key_format_versions_(key_format_versions) {}
 
 std::string EncryptionInfoEntry::ToString() {
+  return ToString("");
+}
+
+std::string EncryptionInfoEntry::ToString(std::string tag_name) {
   std::string tag_string;
-  Tag tag("#EXT-X-KEY", &tag_string);
+  if (tag_name.empty())
+    tag_name = "#EXT-X-KEY";
+  Tag tag(tag_name, &tag_string);
 
   if (method_ == MediaPlaylist::EncryptionMethod::kSampleAes) {
     tag.AddString("METHOD", "SAMPLE-AES");
@@ -365,44 +417,6 @@ std::string EncryptionInfoEntry::ToString() {
 
   return tag_string;
 }
-
-class DiscontinuityEntry : public HlsEntry {
- public:
-  DiscontinuityEntry();
-
-  std::string ToString() override;
-
- private:
-  DiscontinuityEntry(const DiscontinuityEntry&) = delete;
-  DiscontinuityEntry& operator=(const DiscontinuityEntry&) = delete;
-};
-
-DiscontinuityEntry::DiscontinuityEntry()
-    : HlsEntry(HlsEntry::EntryType::kExtDiscontinuity) {}
-
-std::string DiscontinuityEntry::ToString() {
-  return "#EXT-X-DISCONTINUITY";
-}
-
-class PlacementOpportunityEntry : public HlsEntry {
- public:
-  PlacementOpportunityEntry();
-
-  std::string ToString() override;
-
- private:
-  PlacementOpportunityEntry(const PlacementOpportunityEntry&) = delete;
-  PlacementOpportunityEntry& operator=(const PlacementOpportunityEntry&) =
-      delete;
-};
-
-PlacementOpportunityEntry::PlacementOpportunityEntry()
-    : HlsEntry(HlsEntry::EntryType::kExtPlacementOpportunity) {}
-
-std::string PlacementOpportunityEntry::ToString() {
-  return "#EXT-X-PLACEMENT-OPPORTUNITY";
-}
-
 
 class XCueOut : public HlsEntry {
  public:
@@ -500,11 +514,6 @@ std::string XCueIn::ToString() {
   return "#EXT-X-CUE-IN";
 }
 
-}  // namespace
-
-HlsEntry::HlsEntry(HlsEntry::EntryType type) : type_(type) {}
-HlsEntry::~HlsEntry() {}
-
 MediaPlaylist::MediaPlaylist(const HlsParams& hls_params,
                              const std::string& file_name,
                              const std::string& name,
@@ -513,11 +522,12 @@ MediaPlaylist::MediaPlaylist(const HlsParams& hls_params,
       file_name_(file_name),
       name_(name),
       group_id_(group_id),
-      media_sequence_number_(hls_params_.media_sequence_number) {
-        // When there's a forced media_sequence_number, start with discontinuity
-        if (media_sequence_number_ > 0)
-          entries_.emplace_back(new DiscontinuityEntry());
-      }
+      media_sequence_number_(hls_params_.media_sequence_number),
+      reference_time_(absl::InfinitePast()) {
+  // When there's a forced media_sequence_number, start with discontinuity
+  if (media_sequence_number_ > 0)
+    entries_.emplace_back(new DiscontinuityEntry());
+}
 
 MediaPlaylist::~MediaPlaylist() {}
 
@@ -539,8 +549,23 @@ void MediaPlaylist::SetCharacteristicsForTesting(
   characteristics_ = characteristics;
 }
 
+void MediaPlaylist::SetIndexForTesting(uint32_t index) {
+  media_info_.set_index(index);
+}
+
 void MediaPlaylist::SetForcedSubtitleForTesting(const bool forced_subtitle) {
   forced_subtitle_ = forced_subtitle;
+}
+
+void MediaPlaylist::AddEncryptionInfoForTesting(
+    MediaPlaylist::EncryptionMethod method,
+    const std::string& url,
+    const std::string& key_id,
+    const std::string& iv,
+    const std::string& key_format,
+    const std::string& key_format_versions) {
+  entries_.emplace_back(new EncryptionInfoEntry(
+      method, url, key_id, iv, key_format, key_format_versions));
 }
 
 bool MediaPlaylist::SetMediaInfo(const MediaInfo& media_info) {
@@ -615,6 +640,10 @@ void MediaPlaylist::AddSegment(const std::string& file_name,
                              size);
 }
 
+void MediaPlaylist::SetReferenceTime(const absl::Time& reference_time) {
+  reference_time_ = reference_time;
+}
+
 void MediaPlaylist::AddKeyFrame(int64_t timestamp,
                                 uint64_t start_byte_offset,
                                 uint64_t size) {
@@ -676,11 +705,19 @@ void MediaPlaylist::AddXCueIn(Scte35 scte35) {
   entries_.emplace_back(new XCueIn(scte35.id, scte35.cue_data, need_date_time_));
 }
 
-bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
+bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path,
+                                bool event_to_vod_on_end_of_stream,
+                                bool end_stream) {
   if (!target_duration_set_) {
     SetTargetDuration(ceil(GetLongestSegmentDuration()));
   }
   int64_t start_time = 0;
+
+  HlsPlaylistType playlist_type = hls_params_.playlist_type;
+  if (event_to_vod_on_end_of_stream && end_stream &&
+      playlist_type == HlsPlaylistType::kEvent) {
+    playlist_type = HlsPlaylistType::kVod;
+  }
 
   for (auto iter = entries_.begin(); iter != entries_.end(); ++iter) {
       if (iter->get()->type() == HlsEntry::EntryType::kExtInf) {
@@ -691,7 +728,7 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
       }
     }
   std::string content = CreatePlaylistHeader(
-      media_info_, target_duration_, hls_params_.playlist_type, stream_type_,
+      media_info_, target_duration_, playlist_type, stream_type_,
       media_sequence_number_, discontinuity_sequence_number_,
       hls_params_.start_time_offset, start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset));
  
@@ -706,7 +743,7 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
   for (const auto& entry : entries_)
     absl::StrAppendFormat(&content, "%s\n", entry->ToString().c_str());
 
-  if (hls_params_.playlist_type == HlsPlaylistType::kVod) {
+  if (playlist_type == HlsPlaylistType::kVod) {
     content += "#EXT-X-ENDLIST\n";
   }
 
@@ -895,6 +932,40 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     }
   }
 
+  if (hls_params_.add_program_date_time &&
+      reference_time_ != absl::InfinitePast()) {
+    // See if we need to add a program date time tag. It is added before the
+    // first segment, and after every discontinuity.
+    bool is_first_segment = true;
+    bool is_discontinuity = false;
+    if (!entries_.empty()) {
+      for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
+        if ((*it)->type() == HlsEntry::EntryType::kExtInf) {
+          is_first_segment = false;
+          break;
+        }
+      }
+
+      const auto& last = *entries_.back();
+      if (last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
+        is_discontinuity = true;
+      } else if (entries_.size() >= 2) {
+        const auto& second_last = **std::prev(entries_.cend(), 2);
+        if (last.type() == HlsEntry::EntryType::kExtKey &&
+            second_last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
+          is_discontinuity = true;
+        }
+      }
+    }
+
+    if (is_first_segment || is_discontinuity) {
+      const absl::Time program_time =
+          reference_time_ +
+          absl::Seconds(static_cast<double>(start_time) / time_scale_);
+      entries_.emplace_back(new ProgramDateTimeEntry(program_time));
+    }
+  }
+
   entries_.emplace_back(new SegmentInfoEntry(
       segment_file_name, start_time, segment_duration_seconds, use_byte_range_,
       start_byte_offset, size, previous_segment_end_offset_));
@@ -1011,10 +1082,16 @@ void MediaPlaylist::RemoveOldSegment(int64_t start_time) {
       media_info_.bandwidth()));
   while (segments_to_be_removed_.size() >
          hls_params_.preserved_segments_outside_live_window) {
-    VLOG(2) << "Deleting " << segments_to_be_removed_.front();
-    if (!File::Delete(segments_to_be_removed_.front().c_str())) {
-      LOG(WARNING) << "Failed to delete " << segments_to_be_removed_.front()
-                   << "; Will retry later.";
+    const std::string& file_name = segments_to_be_removed_.front();
+    VLOG(2) << "Deleting " << file_name;
+    // DASH and HLS outputs could both be tracking the same files and are in a
+    // race to delete them. Delete() returns false if the file does not exist,
+    // but we only want to retry if the file does exist (indicating a failure
+    // to delete, rather than the file already being gone). GetFileSize()
+    // returns >= 0 if the file exists, and < 0 if it does not.
+    if (!File::Delete(file_name.c_str()) &&
+        File::GetFileSize(file_name.c_str()) >= 0) {
+      LOG(WARNING) << "Failed to delete " << file_name << "; Will retry later.";
       break;
     }
     segments_to_be_removed_.pop_front();

@@ -7,6 +7,7 @@
 #ifndef PACKAGER_HLS_BASE_HLS_NOTIFIER_H_
 #define PACKAGER_HLS_BASE_HLS_NOTIFIER_H_
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,8 @@ class HlsNotifier {
       const std::vector<uint8_t>& system_id,
       const std::vector<uint8_t>& iv,
       const std::vector<uint8_t>& protection_system_specific_data) = 0;
+
+  virtual bool NotifyEndOfStream() = 0;
 
   /// Process any current buffered states/resources.
   /// @return true on success, false otherwise.

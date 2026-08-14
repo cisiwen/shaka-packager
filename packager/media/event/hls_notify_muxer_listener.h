@@ -7,11 +7,13 @@
 #ifndef PACKAGER_MEDIA_EVENT_HLS_NOTIFY_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_HLS_NOTIFY_MUXER_LISTENER_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <packager/media/base/fourccs.h>
 #include <packager/media/event/event_info.h>
 #include <packager/media/event/muxer_listener.h>
 #include <packager/mpd/base/media_info.pb.h>

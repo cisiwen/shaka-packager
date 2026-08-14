@@ -6,12 +6,17 @@
 
 #include <packager/mpd/test/mpd_builder_test_helper.h>
 
+#include <cstddef>
 #include <filesystem>
+#include <ostream>
+#include <string>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <google/protobuf/text_format.h>
 #include <gtest/gtest.h>
+#include <libxml/parser.h>
+#include <libxml/xmlschemas.h>
 
 #include <packager/media/test/test_data_util.h>
 #include <packager/mpd/base/media_info.pb.h>
@@ -43,8 +48,7 @@ MediaInfo GetTestMediaInfo(const std::string& media_info_file_name) {
 }
 
 bool ValidateMpdSchema(const std::string& mpd) {
-  xml::scoped_xml_ptr<xmlDoc> doc(
-      xmlParseMemory(mpd.data(), mpd.size()));
+  xml::scoped_xml_ptr<xmlDoc> doc(xmlParseMemory(mpd.data(), mpd.size()));
   if (!doc) {
     LOG(ERROR) << "Failed to parse mpd into an xml doc.";
     return false;
@@ -60,8 +64,8 @@ bool ValidateMpdSchema(const std::string& mpd) {
       xmlReadMemory(schema_str.data(), schema_str.size(),
                     schema_path.string().c_str(), NULL, 0));
   DCHECK(schema_as_doc);
-  xml::scoped_xml_ptr<xmlSchemaParserCtxt>
-      schema_parser_ctxt(xmlSchemaNewDocParserCtxt(schema_as_doc.get()));
+  xml::scoped_xml_ptr<xmlSchemaParserCtxt> schema_parser_ctxt(
+      xmlSchemaNewDocParserCtxt(schema_as_doc.get()));
   DCHECK(schema_parser_ctxt);
 
   xml::scoped_xml_ptr<xmlSchema> schema(
@@ -71,8 +75,7 @@ bool ValidateMpdSchema(const std::string& mpd) {
   xml::scoped_xml_ptr<xmlSchemaValidCtxt> valid_ctxt(
       xmlSchemaNewValidCtxt(schema.get()));
   DCHECK(valid_ctxt);
-  int validation_result =
-      xmlSchemaValidateDoc(valid_ctxt.get(), doc.get());
+  int validation_result = xmlSchemaValidateDoc(valid_ctxt.get(), doc.get());
   DLOG(INFO) << "XSD validation result: " << validation_result;
   return validation_result == 0;
 }
@@ -88,9 +91,10 @@ void ExpectMpdToEqualExpectedOutputFile(
       << "Failed to read: " << expected_output_file;
 
   // Adding extra << here to get a formatted output.
-  ASSERT_TRUE(XmlEqual(expected_mpd, mpd_string))
-      << "Expected:" << std::endl << expected_mpd << std::endl
-      << "Actual:" << std::endl << mpd_string;
+  ASSERT_TRUE(XmlEqual(expected_mpd, mpd_string)) << "Expected:" << std::endl
+                                                  << expected_mpd << std::endl
+                                                  << "Actual:" << std::endl
+                                                  << mpd_string;
 }
 
 }  // namespace shaka

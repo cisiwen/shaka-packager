@@ -7,10 +7,15 @@
 #ifndef PACKAGER_MEDIA_FORMATS_WEBVTT_WEBVTT_MUXER_H_
 #define PACKAGER_MEDIA_FORMATS_WEBVTT_WEBVTT_MUXER_H_
 
+#include <cstdint>
 #include <memory>
+#include <string>
 
+#include <packager/media/base/muxer_options.h>
 #include <packager/media/base/text_muxer.h>
+#include <packager/media/base/text_stream_info.h>
 #include <packager/media/formats/webvtt/webvtt_file_buffer.h>
+#include <packager/status.h>
 
 namespace shaka {
 namespace media {

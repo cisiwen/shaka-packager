@@ -4,12 +4,16 @@
 
 #include <packager/media/formats/webm/webm_info_parser.h>
 
+#include <chrono>
+#include <cstdint>
 #include <ctime>
+#include <ios>
+#include <string>
 
 #include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
 #include <packager/media/formats/webm/webm_constants.h>
+#include <packager/media/formats/webm/webm_parser.h>
 
 namespace shaka {
 namespace media {
@@ -18,10 +22,7 @@ namespace media {
 // not specified in the INFO element.
 static const int kWebMDefaultTimecodeScale = 1000000;
 
-WebMInfoParser::WebMInfoParser()
-    : timecode_scale_(-1),
-      duration_(-1) {
-}
+WebMInfoParser::WebMInfoParser() : timecode_scale_(-1), duration_(-1) {}
 
 WebMInfoParser::~WebMInfoParser() {}
 

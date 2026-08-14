@@ -7,10 +7,11 @@
 #ifndef PACKAGER_MEDIA_BASE_CC_STREAM_FILTER_H_
 #define PACKAGER_MEDIA_BASE_CC_STREAM_FILTER_H_
 
+#include <cstdint>
+#include <memory>
 #include <string>
 
 #include <packager/media/base/media_handler.h>
-#include <packager/media/base/text_sample.h>
 #include <packager/status.h>
 
 namespace shaka {
