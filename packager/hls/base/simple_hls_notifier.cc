@@ -465,7 +465,7 @@ bool SimpleHlsNotifier::NotifyCueEvent(uint32_t stream_id, int64_t timestamp) {
 
 bool SimpleHlsNotifier::NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
                                           uint32_t splice_event_id) {
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
   LOG(INFO)<<"SimpleHlsNotifier::NotifySCTE35Event notify all streams"<<std::endl;
   for (auto stream_iterator = stream_map_.begin(); stream_iterator != stream_map_.end(); ++stream_iterator) {
     auto& media_playlist = stream_iterator->second->media_playlist;

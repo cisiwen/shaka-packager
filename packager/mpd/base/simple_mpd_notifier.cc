@@ -189,7 +189,7 @@ bool SimpleMpdNotifier::NotifyCueEvent(uint32_t container_id,
 
 bool SimpleMpdNotifier::NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data) {
   if (duration>=0){
-    absl::MutexLock lock(&lock_);
+    absl::MutexLock lock(lock_);
     auto it = representation_map_.begin();
     if (it == representation_map_.end()) {
       return false;

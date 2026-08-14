@@ -227,10 +227,14 @@ endif()
 if(NOT MSVC)
   # The "lib" prefix is implied outside of MSVC.
   set_property(TARGET libpackager PROPERTY OUTPUT_NAME packager)
-  set_property(TARGET libpackager_ext_shared PROPERTY OUTPUT_NAME packager_ext)
+  if(BUILD_SHARED_LIBS)
+    set_property(TARGET libpackager_ext_shared PROPERTY OUTPUT_NAME packager_ext)
+  endif()
 else()
   set_property(TARGET libpackager PROPERTY OUTPUT_NAME libpackager)
-  set_property(TARGET libpackager_ext_shared PROPERTY OUTPUT_NAME libpackager_ext)
+  if(BUILD_SHARED_LIBS)
+    set_property(TARGET libpackager_ext_shared PROPERTY OUTPUT_NAME libpackager_ext)
+  endif()
 endif()
 
 
