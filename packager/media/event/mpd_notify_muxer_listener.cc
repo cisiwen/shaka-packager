@@ -258,7 +258,10 @@ void MpdNotifyMuxerListener::OnCueEvent(int64_t timestamp,
 }
 
 void MpdNotifyMuxerListener::OnSCTE35Event(int64_t timestamp, int64_t duration,
-                                        const std::string& cue_data) {
+                                        const std::string& cue_data,
+                                        uint32_t splice_event_id) {
+  // MPD's NotifySCTE35Event doesn't track splice_event_id -- only HLS's
+  // DATERANGE ID needs it, to correlate a cue-in with its cue-out.
   if (mpd_notifier_->dash_profile() == DashProfile::kLive) {
     mpd_notifier_->NotifySCTE35Event(timestamp, duration, cue_data);
   }

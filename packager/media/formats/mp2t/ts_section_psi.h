@@ -26,7 +26,8 @@ class TsSectionPsi : public TsSection {
   // TsSection implementation.
   bool Parse(bool payload_unit_start_indicator,
              const uint8_t* buf,
-             int size) override;
+             int size,
+             int64_t reference_pts) override;
   bool Flush() override;
   void Reset() override;
 

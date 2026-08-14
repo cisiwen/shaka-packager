@@ -49,7 +49,8 @@ TsSectionPsi::~TsSectionPsi() {}
 
 bool TsSectionPsi::Parse(bool payload_unit_start_indicator,
                          const uint8_t* buf,
-                         int size) {
+                         int size,
+                         int64_t /*reference_pts*/) {
   // Ignore partial PSI.
   if (wait_for_pusi_ && !payload_unit_start_indicator)
     return true;

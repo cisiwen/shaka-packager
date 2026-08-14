@@ -62,8 +62,12 @@ class PidState {
            std::unique_ptr<TsSection> section_parser);
 
   // Extract the content of the TS packet and parse it.
+  // |reference_pts| is the most recently known real media PTS from any
+  // audio/video stream (see Mp2tMediaParser::biggest_pts_), passed down to
+  // section parsers as a real timestamp fallback for sections that carry no
+  // PES timestamp of their own.
   // Return true if successful.
-  bool PushTsPacket(const TsPacket& ts_packet);
+  bool PushTsPacket(const TsPacket& ts_packet, int64_t reference_pts);
 
   // Flush the PID state (possibly emitting some pending frames)
   // and reset its state.
@@ -110,7 +114,7 @@ PidState::PidState(int pid,
   DCHECK(section_parser_);
 }
 
-bool PidState::PushTsPacket(const TsPacket& ts_packet) {
+bool PidState::PushTsPacket(const TsPacket& ts_packet, int64_t reference_pts) {
   DCHECK_EQ(ts_packet.pid(), pid_);
   // The current PID is not part of the PID filter,
   // just discard the incoming TS packet.
@@ -127,7 +131,8 @@ bool PidState::PushTsPacket(const TsPacket& ts_packet) {
 
   bool status =
       section_parser_->Parse(ts_packet.payload_unit_start_indicator(),
-                             ts_packet.payload(), ts_packet.payload_size());
+                             ts_packet.payload(), ts_packet.payload_size(),
+                             reference_pts);
 
   // At the minimum, when parsing failed, auto reset the section parser.
   // Components that use the Mp2tMediaParser can take further action if needed.
@@ -258,7 +263,7 @@ bool Mp2tMediaParser::Parse(const uint8_t* buf, int size) {
     }
 
     if (it != pids_.end()) {
-      RCHECK(it->second->PushTsPacket(*ts_packet));
+      RCHECK(it->second->PushTsPacket(*ts_packet, biggest_pts_));
     } else {
       DVLOG(LOG_LEVEL_TS) << "Ignoring TS packet for pid: " << ts_packet->pid();
     }

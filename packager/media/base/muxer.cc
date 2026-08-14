@@ -98,7 +98,8 @@ Status Muxer::Process(std::unique_ptr<StreamData> stream_data) {
             static_cast<int64_t>(time_in_seconds * time_scale);
         LOG(INFO) <<"SCTE-35 processed in muxer: "<<stream_data->scte35_event->start_time()<<" duration: "<<stream_data->scte35_event->duration()<<std::endl;
         muxer_listener_->OnSCTE35Event(scaled_time, stream_data->scte35_event->duration(),
-                                    stream_data->scte35_event->id());
+                                    stream_data->scte35_event->id(),
+                                    stream_data->scte35_event->splice_event_id());
 
         // Finalize and re-initialize Muxer to generate different content files.
         // Uncomment it after fixing errors

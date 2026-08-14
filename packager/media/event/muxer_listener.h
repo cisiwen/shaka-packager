@@ -169,7 +169,11 @@ class MuxerListener {
   /// @param timestamp indicate the scte35 start timestamp.
   /// @param duration indicate the scte35 duration if cue-out, if cue-in then negative number.
   /// @param cue_data is the data of the cue.
-  virtual void OnSCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data) = 0;
+  /// @param splice_event_id is the real SCTE-35 splice_event_id, used to
+  /// correlate a cue-in/return command with the cue-out it belongs to.
+  virtual void OnSCTE35Event(int64_t timestamp, int64_t duration,
+                            const std::string& cue_data,
+                            uint32_t splice_event_id) = 0;
 
  protected:
   MuxerListener() = default;

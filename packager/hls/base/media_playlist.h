@@ -185,7 +185,9 @@ class MediaPlaylist {
   virtual void AddPlacementOpportunity();
   
   struct Scte35 {
-  uint8_t id;
+  // The real SCTE-35 splice_event_id, used both as the DATERANGE ID and to
+  // correlate a cue-in/return command with the cue-out it belongs to.
+  uint32_t id;
   int64_t timestamp;
   // Negative duration means Cue-in
   int64_t duration;
@@ -195,9 +197,9 @@ class MediaPlaylist {
   std::list<Scte35> scte35_events_;
   Scte35 current_Scte35_ = {0, 0, 0, "", ""};
   Scte35 previous_Scte35_ = {0, 0, 0, "", ""};
-  uint8_t last_scte_id = 0;
 
-  virtual void AddScte35Event(int64_t timestamp, int64_t duration, const std::string& cue_data);
+  virtual void AddScte35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                              uint32_t splice_event_id);
 
   virtual void AddXCueOut(Scte35 scte35);
   virtual void AddXCueCont(int64_t duration, float passed);

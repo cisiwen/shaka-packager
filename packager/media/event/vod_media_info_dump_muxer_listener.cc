@@ -127,7 +127,8 @@ void VodMediaInfoDumpMuxerListener::OnCueEvent(int64_t timestamp,
 }
 
 void VodMediaInfoDumpMuxerListener::OnSCTE35Event(int64_t timestamp, int64_t duration,
-                                               const std::string& cue_data) {
+                                               const std::string& cue_data,
+                                               uint32_t splice_event_id) {
   NOTIMPLEMENTED();
 }
 

@@ -65,7 +65,8 @@ class MockHlsNotifier : public hls::HlsNotifier {
                     uint64_t start_byte_offset,
                     uint64_t size));
   MOCK_METHOD2(NotifyCueEvent, bool(uint32_t stream_id, int64_t timestamp));
-  MOCK_METHOD3(NotifySCTE35Event, bool(int64_t timestamp, int64_t duration, const std::string& cue_data));
+  MOCK_METHOD4(NotifySCTE35Event, bool(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                                      uint32_t splice_event_id));
   MOCK_METHOD5(
       NotifyEncryptionUpdate,
       bool(uint32_t stream_id,

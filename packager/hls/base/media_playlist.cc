@@ -420,23 +420,23 @@ std::string EncryptionInfoEntry::ToString(std::string tag_name) {
 
 class XCueOut : public HlsEntry {
  public:
-  XCueOut(float duration_seconds, uint8_t id, std::string scte_data, std::string date_time, std::string advert_url);
+  XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url);
 
   std::string ToString() override;
 
- 
+
   float duration_seconds_;
   std::string date_time_;
   std::string scte_data_;
   std::string advert_url_;
-  uint8_t id_;
+  uint32_t id_;
   private:
   XCueOut(const XCueOut&) = delete;
   XCueOut& operator=(const XCueOut&) =
       delete;
 };
 
-XCueOut::XCueOut(float duration_seconds, uint8_t id, std::string scte_data, std::string date_time, std::string advert_url)
+XCueOut::XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url)
     : HlsEntry(HlsEntry::EntryType::kExtCueOut),
     duration_seconds_(duration_seconds),
     date_time_(date_time),
@@ -485,21 +485,21 @@ std::string XCueCont::ToString() {
 
 class XCueIn : public HlsEntry {
  public:
-  XCueIn(uint8_t id, std::string scte_data, bool need_date_time);
+  XCueIn(uint32_t id, std::string scte_data, bool need_date_time);
 
   std::string ToString() override;
 
  private:
   std::string date_time_;
   std::string scte_data_;
-  bool need_date_time_;
-  uint8_t id_;
+  [[maybe_unused]] bool need_date_time_;
+  [[maybe_unused]] uint32_t id_;
   XCueIn(const XCueIn&) = delete;
   XCueIn& operator=(const XCueIn&) =
       delete;
 };
 
-XCueIn::XCueIn( uint8_t id, std::string scte_data, bool need_date_time)
+XCueIn::XCueIn( uint32_t id, std::string scte_data, bool need_date_time)
     : HlsEntry(HlsEntry::EntryType::kExtCueIn),
     scte_data_(scte_data),
     need_date_time_(need_date_time),
@@ -660,11 +660,10 @@ void MediaPlaylist::AddKeyFrame(int64_t timestamp,
 }
 
 void MediaPlaylist::AddScte35Event(int64_t timestamp,
-                                int64_t duration, const std::string& cue_data) {
-  last_scte_id++;
-  LOG(INFO)<<"HLS added SCTE35 duration "<<duration<<std::endl;
-  scte35_events_.push_back({last_scte_id, timestamp, duration, cue_data,""});
-  //scte35_events_.push_back({last_scte_id, timestamp, 90*time_scale_, cue_data,""}); // test: generate 90 sec duration adverts
+                                int64_t duration, const std::string& cue_data,
+                                uint32_t splice_event_id) {
+  LOG(INFO)<<"HLS added SCTE35 duration "<<duration<<" event_id "<<splice_event_id<<std::endl;
+  scte35_events_.push_back({splice_event_id, timestamp, duration, cue_data,""});
 }
 
 
@@ -727,12 +726,19 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path,
         break;
       }
     }
+  // Only emit the header-level EXT-X-PROGRAM-DATE-TIME when pts_time_offset
+  // is explicitly configured (used to correct datetimes across ffmpeg
+  // restarts); otherwise this must stay empty to match default behavior.
+  const std::string header_program_datetime =
+      hls_params_.pts_time_offset != 0
+          ? start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset)
+          : "";
   std::string content = CreatePlaylistHeader(
       media_info_, target_duration_, playlist_type, stream_type_,
       media_sequence_number_, discontinuity_sequence_number_,
-      hls_params_.start_time_offset, start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset));
- 
-    LOG(INFO)<<"HLS header program datetime "<<start_time<< " offset: "<<hls_params_.pts_time_offset<<" "<<start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset)<<std::endl;
+      hls_params_.start_time_offset, header_program_datetime);
+
+    LOG(INFO)<<"HLS header program datetime "<<start_time<< " offset: "<<hls_params_.pts_time_offset<<" "<<header_program_datetime<<std::endl;
   //for (const auto& entry : entries_)
 /*  if (previous_Scte35_.duration > 0  && previous_Scte35_.timestamp <= start_time){
     if(previous_Scte35_.timestamp <= static_cast<uint64_t>(start_time) + hls_params_.time_shift_buffer_depth)*/
@@ -884,16 +890,36 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
       if (iter.timestamp <= start_time){
         if (iter.duration >= 0){
           current_Scte35_ = iter;
+          // Anchor the synthetic-close threshold (below) and the CUE-CONT
+          // "passed" calculation to the segment start_time at which this
+          // CUE-OUT actually becomes visible in the playlist, not to
+          // iter.timestamp's raw capture instant. iter.timestamp can precede
+          // this by up to one segment_duration (the event sits queued until
+          // this check first notices iter.timestamp <= start_time), which
+          // otherwise makes every ad's visible duration undershoot its
+          // declared duration by that same, otherwise-unaccounted-for gap.
+          current_Scte35_.timestamp = start_time;
           //current_Scte35_.datetime = time_in_HH_MM_SS_MMM(1000*hls_params_.time_shift_buffer_depth);
           LOG(INFO)<<"HLS: XCueOut "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
           current_Scte35_.datetime = start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset);
           AddXCueOut(current_Scte35_);
         }
         else {
-          LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
-          current_Scte35_ = {0,0,0,"",""};
-          //TODO: check if needed if no cue was before
-          AddXCueIn(current_Scte35_);
+          // Only close the break this cue-in claims to end if it's actually
+          // still open and matches this cue-in's event id. Without this, a
+          // real return command that arrives after the synthetic fallback
+          // below has already closed the break (e.g. because the break ran
+          // longer than its declared duration) would emit a second, redundant
+          // #EXT-X-CUE-IN, and/or a cue-in for one event could incorrectly
+          // close an unrelated, still-open break for a different event.
+          if (current_Scte35_.duration > 0 && current_Scte35_.id == iter.id) {
+            LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
+            current_Scte35_ = {0,0,0,"",""};
+            AddXCueIn(current_Scte35_);
+          } else {
+            LOG(INFO)<<"HLS: ignoring SCTE35 cue-in for event "<<iter.id
+                     <<" -- no matching open break (already closed, or id mismatch)"<<std::endl;
+          }
         }
         scte35_events_.pop_front();
         inserted_cue = true;
