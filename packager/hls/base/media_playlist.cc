@@ -517,14 +517,19 @@ std::string XCueIn::ToString() {
 MediaPlaylist::MediaPlaylist(const HlsParams& hls_params,
                              const std::string& file_name,
                              const std::string& name,
-                             const std::string& group_id)
+                             const std::string& group_id,
+                             bool is_rotation)
     : hls_params_(hls_params),
       file_name_(file_name),
       name_(name),
       group_id_(group_id),
-      media_sequence_number_(hls_params_.media_sequence_number),
+      media_sequence_number_(is_rotation ? 0
+                                         : hls_params_.media_sequence_number),
       reference_time_(absl::InfinitePast()) {
-  // When there's a forced media_sequence_number, start with discontinuity
+  // When there's a forced media_sequence_number, start with discontinuity.
+  // Rotated instances (is_rotation) always start at 0 and skip this --
+  // hls_params_.media_sequence_number only applies to the first playlist of
+  // a session (see #691).
   if (media_sequence_number_ > 0)
     entries_.emplace_back(new DiscontinuityEntry());
 }
@@ -704,17 +709,28 @@ void MediaPlaylist::AddXCueIn(Scte35 scte35) {
   entries_.emplace_back(new XCueIn(scte35.id, scte35.cue_data, need_date_time_));
 }
 
+bool MediaPlaylist::HasOpenAdBreak() const {
+  // current_Scte35_.duration > 0 means a cue-out has been applied to the
+  // playlist with no matching cue-in yet. scte35_events_ non-empty means a
+  // SCTE-35 event (cue-out or cue-in) has arrived but not yet been drained
+  // into the playlist by AddSegmentInfoEntry -- treat that as "in flux" too,
+  // so rotation never races a not-yet-applied signal.
+  return current_Scte35_.duration > 0 || !scte35_events_.empty();
+}
+
 bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path,
                                 bool event_to_vod_on_end_of_stream,
-                                bool end_stream) {
+                                bool end_stream,
+                                bool force_endlist) {
   if (!target_duration_set_) {
     SetTargetDuration(ceil(GetLongestSegmentDuration()));
   }
   int64_t start_time = 0;
 
   HlsPlaylistType playlist_type = hls_params_.playlist_type;
-  if (event_to_vod_on_end_of_stream && end_stream &&
-      playlist_type == HlsPlaylistType::kEvent) {
+  if ((event_to_vod_on_end_of_stream && end_stream &&
+       playlist_type == HlsPlaylistType::kEvent) ||
+      force_endlist) {
     playlist_type = HlsPlaylistType::kVod;
   }
 
@@ -1033,7 +1049,13 @@ void MediaPlaylist::AdjustLastSegmentInfoEntryDuration(int64_t next_timestamp) {
 // MediaPlaylist.
 void MediaPlaylist::SlideWindow() {
   if (hls_params_.time_shift_buffer_depth <= 0.0 ||
-      hls_params_.playlist_type != HlsPlaylistType::kLive) {
+      hls_params_.playlist_type != HlsPlaylistType::kLive ||
+      hls_params_.rotate_manifest_hourly) {
+    // When hourly rotation is enabled, each hourly file is meant to be a
+    // complete, self-contained recording of that hour -- trimming it down
+    // to a live time-shift window would defeat that, so trimming is
+    // disabled entirely for the (bounded, ~1-hour-long) lifetime of each
+    // instance.
     return;
   }
   DCHECK_GT(time_scale_, 0);

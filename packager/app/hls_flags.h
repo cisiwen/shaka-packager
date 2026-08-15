@@ -22,5 +22,8 @@ ABSL_DECLARE_FLAG(int32_t, hls_media_sequence_number);
 ABSL_DECLARE_FLAG(std::optional<double>, hls_start_time_offset);
 ABSL_DECLARE_FLAG(bool, create_session_keys);
 ABSL_DECLARE_FLAG(bool, add_program_date_time);
+ABSL_DECLARE_FLAG(bool, hls_rotate_manifest_hourly);
+ABSL_DECLARE_FLAG(std::string, hls_session_index_output);
+ABSL_DECLARE_FLAG(int32_t, hls_manifest_rotation_test_interval_seconds);
 
 #endif  // PACKAGER_APP_HLS_FLAGS_H_

@@ -635,6 +635,18 @@ std::optional<PackagingParams> GetPackagingParams() {
   hls_params.add_program_date_time = absl::GetFlag(FLAGS_add_program_date_time);
   hls_params.per_playlist_target_duration =
       absl::GetFlag(FLAGS_per_playlist_target_duration);
+  hls_params.rotate_manifest_hourly =
+      absl::GetFlag(FLAGS_hls_rotate_manifest_hourly);
+  hls_params.session_index_output =
+      absl::GetFlag(FLAGS_hls_session_index_output);
+  hls_params.manifest_rotation_test_interval_seconds =
+      absl::GetFlag(FLAGS_hls_manifest_rotation_test_interval_seconds);
+  if (hls_params.rotate_manifest_hourly &&
+      hls_params.session_index_output.empty()) {
+    LOG(ERROR) << "--hls_rotate_manifest_hourly requires "
+                  "--hls_session_index_output to be set.";
+    return std::nullopt;
+  }
 
   if (!ParseClosedCaptions(absl::GetFlag(FLAGS_closed_captions),
                            &packaging_params.closed_captions)) {

@@ -77,10 +77,18 @@ class MediaPlaylist {
   ///        necessarily the same as @a file_name.
   /// @param group_id is the group ID for this playlist. This is the value of
   ///        GROUP-ID attribute for EXT-X-MEDIA.
+  /// @param is_rotation is true when this instance replaces a prior one as
+  ///        part of hourly manifest rotation (see HlsParams::
+  ///        rotate_manifest_hourly). When true, the initial
+  ///        EXT-X-MEDIA-SEQUENCE always starts at 0 and no leading
+  ///        EXT-X-DISCONTINUITY is inserted, regardless of
+  ///        hls_params.media_sequence_number -- that flag is only meant to
+  ///        apply to the very first playlist of a session (see #691).
   MediaPlaylist(const HlsParams& hls_params,
                 const std::string& file_name,
                 const std::string& name,
-                const std::string& group_id);
+                const std::string& group_id,
+                bool is_rotation = false);
   virtual ~MediaPlaylist();
 
   const std::string& file_name() const { return file_name_; }
@@ -205,6 +213,12 @@ class MediaPlaylist {
   virtual void AddXCueCont(int64_t duration, float passed);
   virtual void AddXCueIn(Scte35 scte35);
 
+  /// @return true if there is a SCTE-35 ad break currently open (a cue-out
+  ///         with no matching cue-in yet) or a queued SCTE-35 event not yet
+  ///         applied to the playlist. Used to defer hourly manifest
+  ///         rotation so a break is never split across two hourly files.
+  virtual bool HasOpenAdBreak() const;
+
   /// Write the playlist to |file_path|.
   /// This does not close the file.
   /// If target duration is not set explicitly, this will try to find the target
@@ -218,10 +232,15 @@ class MediaPlaylist {
   /// converted to a vod stream once the event/live stream has ended
   /// @param end_stream whether the stream has ended and this is the final time
   /// we will write to the file
+  /// @param force_endlist if true, EXT-X-ENDLIST is always appended
+  /// regardless of playlist_type -- used to close out an hourly manifest
+  /// during rotation (see HlsParams::rotate_manifest_hourly), independent
+  /// of the event_to_vod_on_end_of_stream/kEvent-only mechanism above.
   /// @return true on success, false otherwise.
   virtual bool WriteToFile(const std::filesystem::path& file_path,
                            bool event_to_vod_on_end_of_stream,
-                           bool end_stream);
+                           bool end_stream,
+                           bool force_endlist = false);
 
   /// If bitrate is specified in MediaInfo then it will use that value.
   /// Otherwise, returns the max bitrate.

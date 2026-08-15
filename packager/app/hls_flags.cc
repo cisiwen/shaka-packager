@@ -64,3 +64,30 @@ ABSL_FLAG(bool,
           false,
           "Add EXT-X-PROGRAM-DATE-TIME tag to the playlist. The date time is "
           "derived from the current wall clock time.");
+ABSL_FLAG(bool,
+          hls_rotate_manifest_hourly,
+          false,
+          "If true, for live HLS output, rotate to a brand new, "
+          "independent, self-contained HLS media/master playlist file set "
+          "at every UTC wall-clock hour boundary (00:00, 01:00, ... UTC). "
+          "Segment (.m4s) production is NOT interrupted or restarted -- "
+          "only the .m3u8 playlist files rotate. Each hourly manifest "
+          "gets its own #EXT-X-ENDLIST when closed and its own "
+          "EXT-X-MEDIA-SEQUENCE/EXT-X-DISCONTINUITY-SEQUENCE starting at "
+          "0. Requires --hls_session_index_output to also be set.");
+ABSL_FLAG(std::string,
+          hls_session_index_output,
+          "",
+          "Output path for the top-level JSON \"session index\" listing "
+          "every hourly HLS master playlist produced by "
+          "--hls_rotate_manifest_hourly, e.g. "
+          "{\"segments\":[{\"start\":\"2026-08-14T15:00:00Z\","
+          "\"master_playlist\":\"master_2026-08-14T15.m3u8\"}]}. Required "
+          "if --hls_rotate_manifest_hourly is set; ignored otherwise.");
+ABSL_FLAG(int32_t,
+          hls_manifest_rotation_test_interval_seconds,
+          0,
+          "TEST-ONLY. If nonzero, overrides the UTC-hour rotation boundary "
+          "with a dilated wall clock so rotation can be exercised in short "
+          "manual/integration tests without waiting for a real hour to "
+          "elapse. Must not be used in production; ignored if 0.");

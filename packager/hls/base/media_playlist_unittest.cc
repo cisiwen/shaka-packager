@@ -262,6 +262,64 @@ TEST_F(MediaPlaylistMultiSegmentTest, WriteToFile) {
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
 }
 
+// force_endlist=true must append EXT-X-ENDLIST even for a LIVE playlist,
+// where it's normally always omitted -- this is what closes out an hourly
+// file during manifest rotation (HlsParams::rotate_manifest_hourly)
+// regardless of the session's overall --hls_playlist_type.
+TEST_F(MediaPlaylistMultiSegmentTest, WriteToFileForceEndlistOnLivePlaylist) {
+  mutable_hls_params()->playlist_type = HlsPlaylistType::kLive;
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, false,
+                                           /*force_endlist=*/true));
+  std::string content;
+  ASSERT_TRUE(File::ReadFileToString(kMemoryFilePath, &content));
+  EXPECT_NE(std::string::npos, content.find("#EXT-X-ENDLIST"));
+}
+
+// Regression guard: force_endlist defaults to false, so a LIVE playlist's
+// existing behavior (never emitting EXT-X-ENDLIST) must stay unchanged.
+TEST_F(MediaPlaylistMultiSegmentTest, WriteToFileDefaultDoesNotForceEndlistOnLive) {
+  mutable_hls_params()->playlist_type = HlsPlaylistType::kLive;
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, false));
+  std::string content;
+  ASSERT_TRUE(File::ReadFileToString(kMemoryFilePath, &content));
+  EXPECT_EQ(std::string::npos, content.find("#EXT-X-ENDLIST"));
+}
+
+// HasOpenAdBreak() must report true as soon as a SCTE-35 cue-out is queued
+// (even before it's drained into the playlist by a later AddSegment call),
+// and go back to false once a matching cue-in is queued and drained -- this
+// is what hourly manifest rotation uses to avoid splitting an ad break
+// across two hourly files.
+TEST_F(MediaPlaylistMultiSegmentTest, HasOpenAdBreak) {
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  EXPECT_FALSE(media_playlist_->HasOpenAdBreak());
+
+  const uint32_t kSpliceEventId = 42;
+  media_playlist_->AddScte35Event(/*timestamp=*/0, /*duration=*/5 * kTimeScale,
+                                  "cue-out-data", kSpliceEventId);
+  EXPECT_TRUE(media_playlist_->HasOpenAdBreak())
+      << "a queued-but-not-yet-drained cue-out must count as open";
+
+  media_playlist_->AddSegment("file1.ts", 0, 2 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  EXPECT_TRUE(media_playlist_->HasOpenAdBreak())
+      << "a drained cue-out with no cue-in yet must still count as open";
+
+  media_playlist_->AddScte35Event(/*timestamp=*/2 * kTimeScale,
+                                  /*duration=*/-1, "cue-in-data",
+                                  kSpliceEventId);
+  media_playlist_->AddSegment("file2.ts", 2 * kTimeScale, 2 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  EXPECT_FALSE(media_playlist_->HasOpenAdBreak())
+      << "a closed ad break (matching cue-in drained) must not count as open";
+}
+
 // If bitrate (bandwidth) is not set in the MediaInfo, use it.
 TEST_F(MediaPlaylistMultiSegmentTest, UseBitrateInMediaInfo) {
   valid_video_media_info_.set_bandwidth(8191);
