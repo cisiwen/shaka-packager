@@ -333,6 +333,13 @@ class MediaPlaylist {
   void RemoveOldSegment(int64_t start_time);
 
   const HlsParams& hls_params_;
+  // True for a hourly-rotation archive instance (see HlsParams::
+  // rotate_manifest_hourly) -- including its very first hour, not just
+  // subsequent rotations. Disables SlideWindow()'s time-shift trimming
+  // regardless of hls_params_.playlist_type/time_shift_buffer_depth, since
+  // the live and archive MediaPlaylist instances for the same stream share
+  // the same hls_params_ but only the live one should ever be trimmed.
+  const bool is_rotation_;
   // Mainly for MasterPlaylist to use these values.
   const std::string file_name_;
   const std::string name_;

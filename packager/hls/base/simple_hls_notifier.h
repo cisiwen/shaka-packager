@@ -106,14 +106,21 @@ class SimpleHlsNotifier : public HlsNotifier {
   friend class SimpleHlsNotifierTest;
 
   struct StreamEntry {
+    // The LIVE playlist: fixed filename, sliding window per
+    // time_shift_buffer_depth -- exactly the pre-rotation-feature behavior,
+    // untouched by HlsParams::rotate_manifest_hourly.
     std::unique_ptr<MediaPlaylist> media_playlist;
     MediaPlaylist::EncryptionMethod encryption_method;
+    // The ARCHIVE playlist: hour-suffixed, rotates hourly, never trims --
+    // an additional, parallel DVR-style output. Null unless
+    // hls_params().rotate_manifest_hourly is true.
+    std::unique_ptr<MediaPlaylist> archive_media_playlist;
     // The playlist's relative path before any hour suffix is applied --
     // needed to rebuild the next hour's rotated file name. Empty/unused
     // unless hls_params().rotate_manifest_hourly is true.
     std::string base_playlist_path;
     // Last-applied encryption info, if any, so it can be replayed onto a
-    // freshly rotated MediaPlaylist.
+    // freshly rotated archive MediaPlaylist.
     std::optional<EncryptionInfoParams> last_encryption_info;
   };
 
@@ -135,6 +142,7 @@ class SimpleHlsNotifier : public HlsNotifier {
   bool end_stream = false;
 
   std::unique_ptr<MediaPlaylistFactory> media_playlist_factory_;
+  // LIVE master playlist: fixed filename, never rotates.
   std::unique_ptr<MasterPlaylist> master_playlist_;
 
   // Maps to unique_ptr because StreamEntry also holds unique_ptr
@@ -147,6 +155,10 @@ class SimpleHlsNotifier : public HlsNotifier {
   absl::Time reference_time_ = absl::InfinitePast();
 
   // -- Hourly manifest rotation state (HlsParams::rotate_manifest_hourly) --
+  // ARCHIVE master playlist: hour-suffixed, replaced on each rotation. Null
+  // unless rotate_manifest_hourly is true.
+  std::unique_ptr<MasterPlaylist> archive_master_playlist_;
+  std::list<MediaPlaylist*> archive_media_playlists_;
   absl::CivilHour current_hour_;
   std::string master_playlist_base_file_name_;
   std::string default_audio_language_;

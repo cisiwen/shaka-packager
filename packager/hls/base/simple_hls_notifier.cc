@@ -334,23 +334,30 @@ SimpleHlsNotifier::SimpleHlsNotifier(const HlsParams& hls_params)
                                        caption.autoselect});
   }
 
-  std::string master_file_name = master_playlist_base_file_name_;
+  // LIVE master playlist: fixed, un-suffixed path -- unaffected by
+  // rotation, exactly as before this feature existed.
+  master_playlist_.reset(new MasterPlaylist(
+      master_playlist_base_file_name_, default_audio_language_,
+      default_text_language_, default_closed_captions_,
+      hls_params.is_independent_segments, hls_params.create_session_keys));
+
+  // ARCHIVE master playlist: hour-suffixed, parallel/additional output.
   if (hls_params.rotate_manifest_hourly) {
     rotation_start_time_ = absl::Now();
     current_hour_ = absl::ToCivilHour(RotationNow(), absl::UTCTimeZone());
-    master_file_name =
+    const std::string archive_master_file_name =
         MakeHourlyFileName(master_playlist_base_file_name_, current_hour_);
+    archive_master_playlist_.reset(new MasterPlaylist(
+        archive_master_file_name, default_audio_language_,
+        default_text_language_, default_closed_captions_,
+        hls_params.is_independent_segments, hls_params.create_session_keys));
     if (!hls_params.session_index_output.empty()) {
       session_index_writer_.reset(
           new SessionIndexWriter(hls_params.session_index_output));
-      session_index_writer_->AppendSegment(current_hour_, master_file_name);
+      session_index_writer_->AppendSegment(current_hour_,
+                                           archive_master_file_name);
     }
   }
-
-  master_playlist_.reset(new MasterPlaylist(
-      master_file_name, default_audio_language_, default_text_language_,
-      default_closed_captions_, hls_params.is_independent_segments,
-      hls_params.create_session_keys));
 }
 
 SimpleHlsNotifier::~SimpleHlsNotifier() {}
@@ -368,14 +375,11 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
   LOG(INFO)<<"NotifyNewHLSStream "<<*stream_id<<" name: "<<playlist_name<<" "<<name<<"seq: "<<sequence_number_<<std::endl;
   const std::string base_playlist_path = MakePathRelative(
       playlist_name, std::filesystem::u8path(master_playlist_dir_));
-  const std::string relative_playlist_path =
-      hls_params().rotate_manifest_hourly
-          ? MakeHourlyFileName(base_playlist_path, current_hour_)
-          : base_playlist_path;
 
+  // LIVE playlist: fixed path, exactly the pre-rotation-feature behavior.
   std::unique_ptr<MediaPlaylist> media_playlist =
-      media_playlist_factory_->Create(hls_params(), relative_playlist_path,
-                                      name, group_id);
+      media_playlist_factory_->Create(hls_params(), base_playlist_path, name,
+                                      group_id);
   MediaInfo adjusted_media_info = MakeMediaInfoPathsRelativeToPlaylist(
       media_info, hls_params().base_url, master_playlist_dir_,
       media_playlist->file_name());
@@ -384,6 +388,25 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
     return false;
   }
   media_playlist->SetReferenceTime(reference_time());
+
+  // ARCHIVE playlist: hour-suffixed, parallel/additional output -- only
+  // when rotation is enabled.
+  std::unique_ptr<MediaPlaylist> archive_media_playlist;
+  if (hls_params().rotate_manifest_hourly) {
+    const std::string archive_path =
+        MakeHourlyFileName(base_playlist_path, current_hour_);
+    archive_media_playlist = media_playlist_factory_->Create(
+        hls_params(), archive_path, name, group_id, /*is_rotation=*/true);
+    MediaInfo archive_adjusted_media_info = MakeMediaInfoPathsRelativeToPlaylist(
+        media_info, hls_params().base_url, master_playlist_dir_,
+        archive_media_playlist->file_name());
+    if (!archive_media_playlist->SetMediaInfo(archive_adjusted_media_info)) {
+      LOG(ERROR) << "Failed to set media info for archive playlist "
+                 << playlist_name;
+      return false;
+    }
+    archive_media_playlist->SetReferenceTime(reference_time());
+  }
 
   MediaPlaylist::EncryptionMethod encryption_method =
       MediaPlaylist::EncryptionMethod::kNone;
@@ -403,9 +426,13 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
   absl::MutexLock lock(lock_);
   *stream_id = sequence_number_++;
   media_playlists_.push_back(media_playlist.get());
-  stream_map_[*stream_id].reset(new StreamEntry{
-      std::move(media_playlist), encryption_method, base_playlist_path,
-      std::nullopt});
+  if (archive_media_playlist) {
+    archive_media_playlists_.push_back(archive_media_playlist.get());
+  }
+  stream_map_[*stream_id].reset(
+      new StreamEntry{std::move(media_playlist), encryption_method,
+                     std::move(archive_media_playlist), base_playlist_path,
+                     std::nullopt});
   return true;
 }
 
@@ -417,8 +444,11 @@ bool SimpleHlsNotifier::NotifySampleDuration(uint32_t stream_id,
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
-  media_playlist->SetSampleDuration(sample_duration);
+  StreamEntry* entry = stream_iterator->second.get();
+  entry->media_playlist->SetSampleDuration(sample_duration);
+  if (entry->archive_media_playlist) {
+    entry->archive_media_playlist->SetSampleDuration(sample_duration);
+  }
   return true;
 }
 
@@ -430,15 +460,20 @@ bool SimpleHlsNotifier::NotifyNewSegment(uint32_t stream_id,
                                          uint64_t size) {
   absl::MutexLock lock(lock_);
   // Must run before the stream_map_ lookup below: rotation replaces every
-  // StreamEntry's MediaPlaylist, so any reference/iterator taken before it
-  // runs would dangle.
+  // StreamEntry's archive MediaPlaylist, so any reference/iterator taken
+  // before it runs would dangle. The LIVE MediaPlaylist is never touched by
+  // rotation.
   RotateManifestsIfNeeded();
   auto stream_iterator = stream_map_.find(stream_id);
   if (stream_iterator == stream_map_.end()) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
+  StreamEntry* entry = stream_iterator->second.get();
+
+  // --- LIVE path: exactly the pre-rotation-feature behavior, unaffected by
+  // HlsParams::rotate_manifest_hourly. ---
+  auto& media_playlist = entry->media_playlist;
   const std::string& segment_url =
       GenerateSegmentUrl(segment_name, hls_params().base_url,
                          master_playlist_dir_, media_playlist->file_name());
@@ -478,6 +513,40 @@ bool SimpleHlsNotifier::NotifyNewSegment(uint32_t stream_id,
       return false;
     }
   }
+
+  // --- ARCHIVE path: mirrors the same segment into the hourly-rotating,
+  // parallel DVR-style output. Writes unconditionally (not gated on
+  // playlist_type), since it's an independent concern from the live
+  // manifest's type. No-op unless rotate_manifest_hourly is true. ---
+  if (entry->archive_media_playlist) {
+    auto& archive_playlist = entry->archive_media_playlist;
+    const std::string& archive_segment_url = GenerateSegmentUrl(
+        segment_name, hls_params().base_url, master_playlist_dir_,
+        archive_playlist->file_name());
+    archive_playlist->AddSegment(archive_segment_url, start_time, duration,
+                                 start_byte_offset, size);
+
+    if (target_duration_updated) {
+      for (MediaPlaylist* playlist : archive_media_playlists_) {
+        playlist->SetTargetDuration(target_duration_);
+        if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
+                                /*event_to_vod_on_end_of_stream=*/false,
+                                end_stream))
+          return false;
+      }
+    } else {
+      if (!WriteMediaPlaylist(master_playlist_dir_, archive_playlist.get(),
+                              /*event_to_vod_on_end_of_stream=*/false,
+                              end_stream))
+        return false;
+    }
+    if (!archive_master_playlist_->WriteMasterPlaylist(
+            hls_params().base_url, master_playlist_dir_,
+            archive_media_playlists_)) {
+      LOG(ERROR) << "Failed to write archive master playlist.";
+      return false;
+    }
+  }
   return true;
 }
 
@@ -491,8 +560,12 @@ bool SimpleHlsNotifier::NotifyKeyFrame(uint32_t stream_id,
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
-  media_playlist->AddKeyFrame(timestamp, start_byte_offset, size);
+  StreamEntry* entry = stream_iterator->second.get();
+  entry->media_playlist->AddKeyFrame(timestamp, start_byte_offset, size);
+  if (entry->archive_media_playlist) {
+    entry->archive_media_playlist->AddKeyFrame(timestamp, start_byte_offset,
+                                               size);
+  }
   return true;
 }
 
@@ -503,8 +576,11 @@ bool SimpleHlsNotifier::NotifyCueEvent(uint32_t stream_id, int64_t timestamp) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
-  media_playlist->AddPlacementOpportunity();
+  StreamEntry* entry = stream_iterator->second.get();
+  entry->media_playlist->AddPlacementOpportunity();
+  if (entry->archive_media_playlist) {
+    entry->archive_media_playlist->AddPlacementOpportunity();
+  }
   return true;
 }
 
@@ -513,9 +589,14 @@ bool SimpleHlsNotifier::NotifySCTE35Event(int64_t timestamp, int64_t duration, c
   absl::MutexLock lock(lock_);
   LOG(INFO)<<"SimpleHlsNotifier::NotifySCTE35Event notify all streams"<<std::endl;
   for (auto stream_iterator = stream_map_.begin(); stream_iterator != stream_map_.end(); ++stream_iterator) {
-    auto& media_playlist = stream_iterator->second->media_playlist;
+    StreamEntry* entry = stream_iterator->second.get();
+    auto& media_playlist = entry->media_playlist;
     LOG(INFO)<<"AddScte35Event to "<<media_playlist->name()<<" "<<media_playlist->file_name()<<std::endl;
     media_playlist->AddScte35Event(timestamp,duration,cue_data,splice_event_id);
+    if (entry->archive_media_playlist) {
+      entry->archive_media_playlist->AddScte35Event(timestamp, duration,
+                                                    cue_data, splice_event_id);
+    }
   }
   return true;
 }
@@ -557,6 +638,10 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
         encryption_method, key_uri, empty_key_id, iv, /*key_format=*/"",
         /*key_format_versions=*/"", media_playlist.get(), &info);
     stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
 
@@ -565,8 +650,14 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
     bool result = HandleWidevineKeyFormats(encryption_method, key_id, iv,
                                            protection_system_specific_data,
                                            media_playlist.get(), &info);
-    if (result)
+    if (result) {
       stream_iterator->second->last_encryption_info = info;
+      if (auto& archive = stream_iterator->second->archive_media_playlist) {
+        archive->AddEncryptionInfo(info.method, info.uri, info.key_id,
+                                   info.iv, info.key_format,
+                                   info.key_format_versions);
+      }
+    }
     return result;
   }
 
@@ -599,6 +690,10 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
                                     iv, "identity", "", media_playlist.get(),
                                     &info);
     stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
   if (IsFairPlaySystemId(system_id) || IsLegacyFairPlaySystemId(system_id)) {
@@ -617,6 +712,10 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
                                     empty_iv, "com.apple.streamingkeydelivery",
                                     "1", media_playlist.get(), &info);
     stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
   if (IsPlayReadySystemId(system_id)) {
@@ -633,6 +732,10 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
                                     empty_key_id, iv, "com.microsoft.playready",
                                     "1", media_playlist.get(), &info);
     stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
 
@@ -650,6 +753,8 @@ bool SimpleHlsNotifier::NotifyEndOfStream() {
 
 bool SimpleHlsNotifier::Flush() {
   absl::MutexLock lock(lock_);
+  // LIVE: exactly the pre-rotation-feature behavior, unaffected by
+  // rotate_manifest_hourly.
   for (MediaPlaylist* playlist : media_playlists_) {
     if (hls_params().per_playlist_target_duration) {
       playlist->SetTargetDuration(
@@ -657,18 +762,39 @@ bool SimpleHlsNotifier::Flush() {
     } else {
       playlist->SetTargetDuration(target_duration_);
     }
-    // When rotation is enabled, process exit closes out the last hour just
-    // like any other rotation would -- it also needs EXT-X-ENDLIST.
     if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
                             hls_params().event_to_vod_on_end_of_stream,
-                            end_stream,
-                            /*force_endlist=*/hls_params().rotate_manifest_hourly))
+                            end_stream))
       return false;
   }
   if (!master_playlist_->WriteMasterPlaylist(
           hls_params().base_url, master_playlist_dir_, media_playlists_)) {
     LOG(ERROR) << "Failed to write master playlist.";
     return false;
+  }
+
+  // ARCHIVE: process exit always closes out the final open hour, just like
+  // any other rotation would -- so it always gets EXT-X-ENDLIST, regardless
+  // of the live playlist's --hls_playlist_type/event_to_vod_on_end_of_stream.
+  for (MediaPlaylist* playlist : archive_media_playlists_) {
+    if (hls_params().per_playlist_target_duration) {
+      playlist->SetTargetDuration(
+          static_cast<int32_t>(ceil(playlist->GetLongestSegmentDuration())));
+    } else {
+      playlist->SetTargetDuration(target_duration_);
+    }
+    if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
+                            /*event_to_vod_on_end_of_stream=*/false,
+                            end_stream, /*force_endlist=*/true))
+      return false;
+  }
+  if (archive_master_playlist_) {
+    if (!archive_master_playlist_->WriteMasterPlaylist(
+            hls_params().base_url, master_playlist_dir_,
+            archive_media_playlists_)) {
+      LOG(ERROR) << "Failed to write archive master playlist.";
+      return false;
+    }
   }
   return true;
 }
@@ -697,37 +823,39 @@ void SimpleHlsNotifier::RotateManifestsIfNeeded() {
     return;
   }
 
-  // Never split an open SCTE-35 ad break across two hourly files -- defer
-  // and retry on the next segment instead.
-  for (MediaPlaylist* playlist : media_playlists_) {
+  // Never split an open SCTE-35 ad break across two hourly archive files --
+  // defer and retry on the next segment instead. The LIVE playlists are
+  // unaffected by rotation entirely, so only archive playlists matter here.
+  for (MediaPlaylist* playlist : archive_media_playlists_) {
     if (playlist->HasOpenAdBreak()) {
       return;
     }
   }
 
-  // 1. Final, ENDLIST-forced write of the hour that's closing.
-  for (MediaPlaylist* playlist : media_playlists_) {
+  // 1. Final, ENDLIST-forced write of the archive hour that's closing.
+  for (MediaPlaylist* playlist : archive_media_playlists_) {
     playlist->SetTargetDuration(target_duration_);
     WriteMediaPlaylist(master_playlist_dir_, playlist,
-                       hls_params().event_to_vod_on_end_of_stream, end_stream,
+                       /*event_to_vod_on_end_of_stream=*/false, end_stream,
                        /*force_endlist=*/true);
   }
-  master_playlist_->WriteMasterPlaylist(hls_params().base_url,
-                                        master_playlist_dir_,
-                                        media_playlists_);
+  if (archive_master_playlist_) {
+    archive_master_playlist_->WriteMasterPlaylist(
+        hls_params().base_url, master_playlist_dir_, archive_media_playlists_);
+  }
 
-  // 2. Fresh MediaPlaylist per stream. stream_map_ is a std::map keyed by
-  // registration-order sequence_number_, so iterating it preserves the same
-  // order media_playlists_ was originally built in.
-  media_playlists_.clear();
+  // 2. Fresh archive MediaPlaylist per stream. stream_map_ is a std::map
+  // keyed by registration-order sequence_number_, so iterating it preserves
+  // the same order archive_media_playlists_ was originally built in.
+  archive_media_playlists_.clear();
   for (auto& kv : stream_map_) {
     StreamEntry* entry = kv.second.get();
     const std::string new_path =
         MakeHourlyFileName(entry->base_playlist_path, new_hour);
     std::unique_ptr<MediaPlaylist> fresh = media_playlist_factory_->Create(
-        hls_params(), new_path, entry->media_playlist->name(),
-        entry->media_playlist->group_id(), /*is_rotation=*/true);
-    fresh->SetMediaInfo(entry->media_playlist->GetMediaInfo());
+        hls_params(), new_path, entry->archive_media_playlist->name(),
+        entry->archive_media_playlist->group_id(), /*is_rotation=*/true);
+    fresh->SetMediaInfo(entry->archive_media_playlist->GetMediaInfo());
     fresh->SetReferenceTime(reference_time());
     fresh->SetTargetDuration(target_duration_);
     if (entry->last_encryption_info) {
@@ -735,15 +863,16 @@ void SimpleHlsNotifier::RotateManifestsIfNeeded() {
       fresh->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
                                info.key_format, info.key_format_versions);
     }
-    media_playlists_.push_back(fresh.get());
-    entry->media_playlist = std::move(fresh);
+    archive_media_playlists_.push_back(fresh.get());
+    entry->archive_media_playlist = std::move(fresh);
   }
 
-  // 3. Swap in a new MasterPlaylist with the hour-suffixed filename --
-  // MasterPlaylist's file_name_ is const, so rotating means a new instance.
+  // 3. Swap in a new archive MasterPlaylist with the hour-suffixed
+  // filename -- MasterPlaylist's file_name_ is const, so rotating means a
+  // new instance.
   const std::string new_master_file_name =
       MakeHourlyFileName(master_playlist_base_file_name_, new_hour);
-  master_playlist_.reset(new MasterPlaylist(
+  archive_master_playlist_.reset(new MasterPlaylist(
       new_master_file_name, default_audio_language_, default_text_language_,
       default_closed_captions_, hls_params().is_independent_segments,
       hls_params().create_session_keys));

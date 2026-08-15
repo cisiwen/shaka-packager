@@ -139,6 +139,14 @@ class SimpleHlsNotifierTest : public ::testing::Test {
     notifier->master_playlist_ = std::move(playlist);
   }
 
+  // Injects the ARCHIVE master playlist (hour-suffixed, only used when
+  // HlsParams::rotate_manifest_hourly is true) -- separate from the LIVE
+  // master_playlist_ above, which never rotates.
+  void InjectArchiveMasterPlaylist(std::unique_ptr<MasterPlaylist> playlist,
+                                   SimpleHlsNotifier* notifier) {
+    notifier->archive_master_playlist_ = std::move(playlist);
+  }
+
   // Rewinds the notifier's rotation-tracking hour into the past, so the very
   // next NotifyNewSegment() call sees the "hour" as having already advanced
   // and triggers rotation deterministically, without waiting on real
@@ -207,26 +215,46 @@ TEST_F(SimpleHlsNotifierTest, Flush) {
 // is a friend of SimpleHlsNotifier) so rotation triggers deterministically
 // on the next NotifyNewSegment call, without waiting on real wall-clock
 // time.
+// Proves the LIVE and ARCHIVE manifest tracks are truly independent: the
+// LIVE playlist/master (fixed filenames, sliding window) must be completely
+// untouched by rotation -- no HasOpenAdBreak() check, no forced-ENDLIST
+// write, no replacement -- while a SEPARATE, parallel ARCHIVE
+// playlist/master (hour-suffixed) rotates to a fresh instance, exactly as
+// hourly rotation is designed to behave alongside (not instead of) the
+// original always-current manifest.
 TEST_F(SimpleHlsNotifierTest, RotateManifestsHourlyWhenHourAdvances) {
   hls_params_.rotate_manifest_hourly = true;
   hls_params_.session_index_output = "memory://session_index_test.json";
 
   SimpleHlsNotifier notifier(hls_params_);
 
-  std::unique_ptr<MockMasterPlaylist> old_master(new MockMasterPlaylist());
-  MockMasterPlaylist* old_master_ptr = old_master.get();
-  InjectMasterPlaylist(std::move(old_master), &notifier);
+  std::unique_ptr<MockMasterPlaylist> live_master(new MockMasterPlaylist());
+  MockMasterPlaylist* live_master_ptr = live_master.get();
+  InjectMasterPlaylist(std::move(live_master), &notifier);
+
+  std::unique_ptr<MockMasterPlaylist> archive_master(new MockMasterPlaylist());
+  MockMasterPlaylist* archive_master_ptr = archive_master.get();
+  InjectArchiveMasterPlaylist(std::move(archive_master), &notifier);
 
   std::unique_ptr<MockMediaPlaylistFactory> factory(
       new MockMediaPlaylistFactory());
   MockMediaPlaylistFactory* factory_ptr = factory.get();
   InjectMediaPlaylistFactory(std::move(factory), &notifier);
 
-  MockMediaPlaylist* old_playlist =
+  // NotifyNewStream constructs both a LIVE (is_rotation=false, fixed path)
+  // and an ARCHIVE (is_rotation=true, hour-suffixed path) playlist.
+  MockMediaPlaylist* live_playlist =
       new MockMediaPlaylist("playlist.m3u8", "name", "groupid");
-  EXPECT_CALL(*factory_ptr, CreateMock(_, _, _, _, _))
-      .WillOnce(Return(old_playlist));
-  EXPECT_CALL(*old_playlist, SetMediaInfo(_)).WillOnce(Return(true));
+  MockMediaPlaylist* archive_playlist_hour1 =
+      new MockMediaPlaylist("playlist_2026-01-01T00.m3u8", "name", "groupid");
+  EXPECT_CALL(*factory_ptr,
+              CreateMock(_, StrEq("playlist.m3u8"), _, _, /*is_rotation=*/false))
+      .WillOnce(Return(live_playlist));
+  EXPECT_CALL(*factory_ptr,
+              CreateMock(_, HasSubstr("playlist_"), _, _, /*is_rotation=*/true))
+      .WillOnce(Return(archive_playlist_hour1));
+  EXPECT_CALL(*live_playlist, SetMediaInfo(_)).WillOnce(Return(true));
+  EXPECT_CALL(*archive_playlist_hour1, SetMediaInfo(_)).WillOnce(Return(true));
 
   MediaInfo media_info;
   media_info.set_reference_time_scale(1000);
@@ -236,24 +264,36 @@ TEST_F(SimpleHlsNotifierTest, RotateManifestsHourlyWhenHourAdvances) {
 
   SetCurrentHourForTesting(absl::CivilHour(2000, 1, 1, 0, 0, 0), &notifier);
 
-  MockMediaPlaylist* new_playlist =
-      new MockMediaPlaylist("playlist_rotated.m3u8", "name", "groupid");
-  EXPECT_CALL(*old_playlist, HasOpenAdBreak()).WillOnce(Return(false));
-  EXPECT_CALL(*old_playlist, SetTargetDuration(_));
-  EXPECT_CALL(*old_playlist, WriteToFile(_, _, _, /*force_endlist=*/true))
+  // The LIVE playlist/master must see NONE of the rotation-only calls.
+  EXPECT_CALL(*live_playlist, HasOpenAdBreak()).Times(0);
+  EXPECT_CALL(*live_playlist, WriteToFile(_, _, _, /*force_endlist=*/true))
+      .Times(0);
+  EXPECT_CALL(*live_master_ptr, WriteMasterPlaylist(_, _, _)).Times(0);
+  // The LIVE playlist still gets the new segment though -- it's not
+  // rotation-aware, just a normal, always-on write.
+  EXPECT_CALL(*live_playlist, AddSegment(_, _, _, _, _));
+
+  MockMediaPlaylist* archive_playlist_hour2 =
+      new MockMediaPlaylist("playlist_2000-01-01T00.m3u8", "name", "groupid");
+  EXPECT_CALL(*archive_playlist_hour1, HasOpenAdBreak()).WillOnce(Return(false));
+  EXPECT_CALL(*archive_playlist_hour1, SetTargetDuration(_));
+  EXPECT_CALL(*archive_playlist_hour1,
+              WriteToFile(_, _, _, /*force_endlist=*/true))
       .WillOnce(Return(true));
-  EXPECT_CALL(*old_master_ptr, WriteMasterPlaylist(_, _, _))
+  EXPECT_CALL(*archive_master_ptr, WriteMasterPlaylist(_, _, _))
       .WillOnce(Return(true));
   EXPECT_CALL(*factory_ptr,
-              CreateMock(_, HasSubstr("playlist"), StrEq("name"),
+              CreateMock(_, HasSubstr("playlist_"), StrEq("name"),
                         StrEq("groupid"), /*is_rotation=*/true))
-      .WillOnce(Return(new_playlist));
-  EXPECT_CALL(*new_playlist, SetMediaInfo(_)).WillOnce(Return(true));
-  EXPECT_CALL(*new_playlist, SetTargetDuration(_));
+      .WillOnce(Return(archive_playlist_hour2));
+  EXPECT_CALL(*archive_playlist_hour2, SetMediaInfo(_)).WillOnce(Return(true));
+  EXPECT_CALL(*archive_playlist_hour2, SetTargetDuration(_));
+  EXPECT_CALL(*archive_playlist_hour2, WriteToFile(_, _, _, _))
+      .WillOnce(Return(true));
 
-  // This new_playlist call is the one that lands on the FRESH (rotated)
+  // This is the one call that lands on the FRESH (rotated) archive
   // instance, proving the swap actually took effect.
-  EXPECT_CALL(*new_playlist, AddSegment(_, _, _, _, _));
+  EXPECT_CALL(*archive_playlist_hour2, AddSegment(_, _, _, _, _));
 
   ASSERT_TRUE(notifier.NotifyNewSegment(stream_id, "segment1.ts", 0, 1000,
                                         0, 1000));

@@ -520,6 +520,7 @@ MediaPlaylist::MediaPlaylist(const HlsParams& hls_params,
                              const std::string& group_id,
                              bool is_rotation)
     : hls_params_(hls_params),
+      is_rotation_(is_rotation),
       file_name_(file_name),
       name_(name),
       group_id_(group_id),
@@ -1049,13 +1050,14 @@ void MediaPlaylist::AdjustLastSegmentInfoEntryDuration(int64_t next_timestamp) {
 // MediaPlaylist.
 void MediaPlaylist::SlideWindow() {
   if (hls_params_.time_shift_buffer_depth <= 0.0 ||
-      hls_params_.playlist_type != HlsPlaylistType::kLive ||
-      hls_params_.rotate_manifest_hourly) {
-    // When hourly rotation is enabled, each hourly file is meant to be a
-    // complete, self-contained recording of that hour -- trimming it down
-    // to a live time-shift window would defeat that, so trimming is
-    // disabled entirely for the (bounded, ~1-hour-long) lifetime of each
-    // instance.
+      hls_params_.playlist_type != HlsPlaylistType::kLive || is_rotation_) {
+    // Archive/rotation instances (is_rotation_) are meant to be a complete,
+    // self-contained recording of their hour -- trimming down to a live
+    // time-shift window would defeat that, so trimming is disabled entirely
+    // for the (bounded, ~1-hour-long) lifetime of each instance. This is a
+    // per-instance check (not a global hls_params_ flag) because the live
+    // and archive MediaPlaylist for the same stream share the same
+    // hls_params_ -- only the archive one should skip trimming.
     return;
   }
   DCHECK_GT(time_scale_, 0);
