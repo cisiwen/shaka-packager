@@ -96,5 +96,45 @@ HLS options
 
 --create_session_keys
 
-    Playback of Offline HLS assets shall use EXT-X-SESSION-KEY to declare all 
+    Playback of Offline HLS assets shall use EXT-X-SESSION-KEY to declare all
     eligible content keys in the master playlist.
+
+--hls_rotate_manifest_hourly
+
+    For live HLS output, additionally rotate to a brand new, independent,
+    self-contained HLS media/master playlist file set at every UTC
+    wall-clock hour boundary (00:00, 01:00, ... UTC), alongside (not
+    instead of) the normal, always-current, sliding-window live manifest
+    (``--hls_master_playlist_output`` and its per-stream playlists). This
+    is meant for building a DVR-style session recording: while the live
+    manifest keeps behaving exactly as it always has, an additional
+    "archive" copy of the manifest and segments is rotated hourly, with
+    each hourly file getting its own ``#EXT-X-ENDLIST`` and its own
+    ``EXT-X-MEDIA-SEQUENCE``/``EXT-X-DISCONTINUITY-SEQUENCE`` starting at
+    0 when closed. Segment (``.m4s``) production itself is completely
+    unaffected -- only ``.m3u8`` playlist writing rotates. Requires
+    ``--hls_session_index_output`` to also be set. DASH/MPD output
+    (``--mpd_output``) is unaffected by this flag; it has no archive
+    concept.
+
+--hls_session_index_output <file_path>
+
+    Output path for a JSON "session index" file listing every hourly
+    master playlist produced by ``--hls_rotate_manifest_hourly``, e.g.::
+
+        {"segments": [
+          {"start": "2026-08-14T15:00:00Z", "master_playlist": "master_2026-08-14T15.m3u8"},
+          {"start": "2026-08-14T16:00:00Z", "master_playlist": "master_2026-08-14T16.m3u8"}
+        ]}
+
+    This lets a DVR-style tool browse a whole live session as a sequence
+    of hour-long recordings. Required (and only used) when
+    ``--hls_rotate_manifest_hourly`` is set.
+
+--hls_manifest_rotation_test_interval_seconds <seconds>
+
+    **Test-only.** If nonzero, dilates wall-clock time so that manifest
+    rotation happens roughly every N real seconds instead of on genuine
+    UTC hour boundaries, letting ``--hls_rotate_manifest_hourly`` be
+    exercised in short integration tests without waiting for a real hour
+    to elapse. Must be 0 (the default) in production.
