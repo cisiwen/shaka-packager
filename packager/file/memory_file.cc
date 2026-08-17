@@ -7,15 +7,18 @@
 #include <packager/file/memory_file.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>  // for memcpy
 #include <map>
-#include <memory>
-#include <set>
+#include <string>
+#include <vector>
 
+#include <absl/base/thread_annotations.h>
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/synchronization/mutex.h>
 
+#include <packager/file.h>
 #include <packager/macros/logging.h>
 
 namespace shaka {
@@ -31,21 +34,21 @@ class FileSystem {
     return &instance;
   }
 
-  void Delete(const std::string& file_name) {
-    absl::MutexLock auto_lock(&mutex_);
+  bool Delete(const std::string& file_name) {
+    absl::MutexLock auto_lock(mutex_);
 
     if (open_files_.find(file_name) != open_files_.end()) {
       LOG(ERROR) << "File '" << file_name
                  << "' is still open. Deleting an open MemoryFile is not "
                     "allowed. Exit without deleting the file.";
-      return;
+      return false;
     }
 
-    files_.erase(file_name);
+    return files_.erase(file_name) > 0;
   }
 
   void DeleteAll() {
-    absl::MutexLock auto_lock(&mutex_);
+    absl::MutexLock auto_lock(mutex_);
     if (!open_files_.empty()) {
       LOG(ERROR) << "There are still files open. Deleting an open MemoryFile "
                     "is not allowed. Exit without deleting the file.";
@@ -56,7 +59,7 @@ class FileSystem {
 
   std::vector<uint8_t>* Open(const std::string& file_name,
                              const std::string& mode) {
-    absl::MutexLock auto_lock(&mutex_);
+    absl::MutexLock auto_lock(mutex_);
 
     if (open_files_.find(file_name) != open_files_.end()) {
       NOTIMPLEMENTED() << "File '" << file_name
@@ -83,7 +86,7 @@ class FileSystem {
   }
 
   bool Close(const std::string& file_name) {
-    absl::MutexLock auto_lock(&mutex_);
+    absl::MutexLock auto_lock(mutex_);
 
     auto iter = open_files_.find(file_name);
     if (iter == open_files_.end()) {
@@ -191,8 +194,8 @@ void MemoryFile::DeleteAll() {
   FileSystem::Instance()->DeleteAll();
 }
 
-void MemoryFile::Delete(const std::string& file_name) {
-  FileSystem::Instance()->Delete(file_name);
+bool MemoryFile::Delete(const std::string& file_name) {
+  return FileSystem::Instance()->Delete(file_name);
 }
 
 }  // namespace shaka

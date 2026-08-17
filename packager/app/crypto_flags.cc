@@ -6,7 +6,9 @@
 
 #include <packager/app/crypto_flags.h>
 
+#include <cstdint>
 #include <cstdio>
+#include <string>
 
 #include <absl/flags/flag.h>
 
@@ -14,7 +16,8 @@ ABSL_FLAG(std::string,
           protection_scheme,
           "cenc",
           "Specify a protection scheme, 'cenc' or 'cbc1' or pattern-based "
-          "protection schemes 'cens' or 'cbcs'.");
+          "protection schemes 'cens' or 'cbcs', or 'aes128' for HLS AES-128 "
+          "full-segment CBC encryption (TS/HLS only, no DRM system required).");
 ABSL_FLAG(
     int32_t,
     crypt_byte_block,
@@ -35,6 +38,10 @@ ABSL_FLAG(bool,
           vp9_subsample_encryption,
           true,
           "Enable VP9 subsample encryption.");
+ABSL_FLAG(bool,
+          cencv1,
+          false,
+          "Use CENC v1 (2012) instead of v3 (2016+) for encryption.");
 ABSL_FLAG(std::string,
           playready_extra_header_data,
           "",
@@ -66,6 +73,13 @@ bool ValueIsXml(const char* flagname, const std::string& value) {
 namespace shaka {
 bool ValidateCryptoFlags() {
   bool success = true;
+
+  auto cencv1 = absl::GetFlag(FLAGS_cencv1);
+  auto scheme = absl::GetFlag(FLAGS_protection_scheme);
+  if (cencv1 && scheme != "cenc") {
+    fprintf(stderr, "ERROR: CENC v1 only supports 'cenc' scheme.\n");
+    success = false;
+  }
 
   auto crypt_byte_block = absl::GetFlag(FLAGS_crypt_byte_block);
   if (!ValueNotGreaterThanTen("crypt_byte_block", crypt_byte_block)) {

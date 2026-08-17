@@ -7,12 +7,15 @@
 #ifndef PACKAGER_MEDIA_BASE_PLAYREADY_SOURCE_H_
 #define PACKAGER_MEDIA_BASE_PLAYREADY_SOURCE_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <packager/crypto_params.h>
 #include <packager/macros/classes.h>
 #include <packager/media/base/key_source.h>
+#include <packager/status.h>
 
 namespace shaka {
 namespace media {
@@ -40,7 +43,8 @@ class PlayReadyKeySource : public KeySource {
                             const std::string& stream_label,
                             EncryptionKey* key) override;
   /// @}
-  virtual Status FetchKeysWithProgramIdentifier(const std::string& program_identifier);
+  virtual Status FetchKeysWithProgramIdentifier(
+      const std::string& program_identifier);
 
   /// Creates a new PlayReadyKeySource from the given data.
   /// Returns null if the strings are invalid.

@@ -7,9 +7,12 @@
 #include <packager/media/event/muxer_listener_factory.h>
 
 #include <list>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
-#include <absl/log/log.h>
 #include <absl/strings/str_format.h>
 
 #include <packager/hls/base/hls_notifier.h>
@@ -31,8 +34,8 @@ std::unique_ptr<MuxerListener> CreateMediaInfoDumpListenerInternal(
     bool use_segment_list) {
   DCHECK(!output.empty());
 
-  std::unique_ptr<MuxerListener> listener(
-      new VodMediaInfoDumpMuxerListener(output + kMediaInfoSuffix, use_segment_list));
+  std::unique_ptr<MuxerListener> listener(new VodMediaInfoDumpMuxerListener(
+      output + kMediaInfoSuffix, use_segment_list));
   return listener;
 }
 
@@ -111,9 +114,8 @@ std::unique_ptr<MuxerListener> MuxerListenerFactory::CreateListener(
     std::unique_ptr<CombinedMuxerListener> combined_listener(
         new CombinedMuxerListener);
     if (output_media_info_) {
-      combined_listener->AddListener(
-          CreateMediaInfoDumpListenerInternal(stream.media_info_output,
-                                              use_segment_list_));
+      combined_listener->AddListener(CreateMediaInfoDumpListenerInternal(
+          stream.media_info_output, use_segment_list_));
     }
 
     if (mpd_notifier_ && !stream.hls_only) {

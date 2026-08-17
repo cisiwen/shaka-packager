@@ -7,6 +7,10 @@
 #ifndef MEDIA_BASE_WIDEVINE_PSSH_GENERATOR_H_
 #define MEDIA_BASE_WIDEVINE_PSSH_GENERATOR_H_
 
+#include <cstdint>
+#include <optional>
+#include <vector>
+
 #include <packager/media/base/fourccs.h>
 #include <packager/media/base/pssh_generator.h>
 

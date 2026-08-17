@@ -6,21 +6,37 @@
 
 #include <packager/hls/base/simple_hls_notifier.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <iterator>
+#include <memory>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/flags/flag.h>
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/strings/escaping.h>
-#include <absl/strings/numbers.h>
+#include <absl/strings/str_format.h>
+#include <absl/strings/string_view.h>
+#include <absl/synchronization/mutex.h>
+#include <absl/time/civil_time.h>
+#include <absl/time/clock.h>
 
+#include <packager/cea_caption.h>
 #include <packager/file/file_util.h>
+#include <packager/hls/base/hls_notifier.h>
+#include <packager/hls/base/master_playlist.h>
+#include <packager/hls_params.h>
 #include <packager/media/base/protection_system_ids.h>
 #include <packager/media/base/protection_system_specific_info.h>
 #include <packager/media/base/proto_json_util.h>
 #include <packager/media/base/widevine_pssh_data.pb.h>
+#include <packager/mpd/base/media_info.pb.h>
 
 ABSL_FLAG(bool,
           enable_legacy_widevine_hls_signaling,
@@ -72,9 +88,9 @@ bool IsPlayReadySystemId(const std::vector<uint8_t>& system_id) {
 
 std::string Base64EncodeData(const std::string& prefix,
                              const std::string& data) {
-    std::string data_base64;
-    absl::Base64Escape(data, &data_base64);
-    return prefix + data_base64;
+  std::string data_base64;
+  absl::Base64Escape(data, &data_base64);
+  return prefix + data_base64;
 }
 
 std::string VectorToString(const std::vector<uint8_t>& v) {
@@ -173,6 +189,19 @@ bool WidevinePsshToJson(const std::vector<uint8_t>& pssh_box,
   return true;
 }
 
+// Turns e.g. "master.m3u8" into "master_2026-08-14T15.m3u8" for the given
+// UTC hour, preserving any directory prefix, e.g. "bitrate_3/video.m3u8"
+// into "bitrate_3/video_2026-08-14T15.m3u8".
+std::string MakeHourlyFileName(const std::string& path, absl::CivilHour hour) {
+  const std::filesystem::path p(path);
+  const std::string suffix =
+      absl::StrFormat("_%04d-%02d-%02dT%02d", static_cast<int>(hour.year()),
+                      hour.month(), hour.day(), hour.hour());
+  const std::string new_filename =
+      p.stem().string() + suffix + p.extension().string();
+  return (p.parent_path() / new_filename).string();
+}
+
 std::optional<MediaPlaylist::EncryptionMethod> StringToEncryptionMethod(
     const std::string& method) {
   if (method == "cenc") {
@@ -185,6 +214,10 @@ std::optional<MediaPlaylist::EncryptionMethod> StringToEncryptionMethod(
     // cbca is a place holder for sample aes.
     return MediaPlaylist::EncryptionMethod::kSampleAes;
   }
+  if (method == "aes8") {
+    // aes8 is the internal FourCC for HLS AES-128 full-segment encryption.
+    return MediaPlaylist::EncryptionMethod::kAes128;
+  }
   return std::nullopt;
 }
 
@@ -195,7 +228,8 @@ void NotifyEncryptionToMediaPlaylist(
     const std::vector<uint8_t>& iv,
     const std::string& key_format,
     const std::string& key_format_version,
-    MediaPlaylist* media_playlist) {
+    MediaPlaylist* media_playlist,
+    EncryptionInfoParams* out_params) {
   std::string iv_string;
   if (!iv.empty()) {
     iv_string =
@@ -209,10 +243,12 @@ void NotifyEncryptionToMediaPlaylist(
                                key_id.size()));
   }
 
-  media_playlist->AddEncryptionInfo(
-      encryption_method,
-      uri, key_id_string, iv_string,
-      key_format, key_format_version);
+  media_playlist->AddEncryptionInfo(encryption_method, uri, key_id_string,
+                                    iv_string, key_format, key_format_version);
+  if (out_params) {
+    *out_params = {encryption_method, uri, key_id_string, iv_string,
+                   key_format, key_format_version};
+  }
 }
 
 // Creates JSON format and the format similar to MPD.
@@ -221,7 +257,8 @@ bool HandleWidevineKeyFormats(
     const std::vector<uint8_t>& key_id,
     const std::vector<uint8_t>& iv,
     const std::vector<uint8_t>& protection_system_specific_data,
-    MediaPlaylist* media_playlist) {
+    MediaPlaylist* media_playlist,
+    EncryptionInfoParams* out_params) {
   if (absl::GetFlag(FLAGS_enable_legacy_widevine_hls_signaling) &&
       encryption_method == MediaPlaylist::EncryptionMethod::kSampleAes) {
     // This format allows SAMPLE-AES only.
@@ -234,7 +271,7 @@ bool HandleWidevineKeyFormats(
         Base64EncodeData(kUriBase64Prefix, key_uri_data);
     NotifyEncryptionToMediaPlaylist(encryption_method, key_uri_data_base64,
                                     std::vector<uint8_t>(), iv, "com.widevine",
-                                    "1", media_playlist);
+                                    "1", media_playlist, out_params);
   }
 
   std::string pssh_as_string(
@@ -244,14 +281,18 @@ bool HandleWidevineKeyFormats(
       Base64EncodeData(kUriBase64Prefix, pssh_as_string);
   NotifyEncryptionToMediaPlaylist(encryption_method, key_uri_data_base64,
                                   key_id, iv, kWidevineDashIfIopUUID, "1",
-                                  media_playlist);
+                                  media_playlist, out_params);
   return true;
 }
 
 bool WriteMediaPlaylist(const std::string& output_dir,
-                        MediaPlaylist* playlist) {
+                        MediaPlaylist* playlist,
+                        const bool event_to_vod_on_end_of_stream,
+                        const bool end_stream,
+                        const bool force_endlist = false) {
   auto file_path = std::filesystem::u8path(output_dir) / playlist->file_name();
-  if (!playlist->WriteToFile(file_path)) {
+  if (!playlist->WriteToFile(file_path, event_to_vod_on_end_of_stream,
+                             end_stream, force_endlist)) {
     LOG(ERROR) << "Failed to write playlist " << file_path.string();
     return false;
   }
@@ -266,25 +307,57 @@ std::unique_ptr<MediaPlaylist> MediaPlaylistFactory::Create(
     const HlsParams& hls_params,
     const std::string& file_name,
     const std::string& name,
-    const std::string& group_id) {
+    const std::string& group_id,
+    bool is_rotation) {
   return std::unique_ptr<MediaPlaylist>(
-      new MediaPlaylist(hls_params, file_name, name, group_id));
+      new MediaPlaylist(hls_params, file_name, name, group_id, is_rotation));
 }
 
 SimpleHlsNotifier::SimpleHlsNotifier(const HlsParams& hls_params)
     : HlsNotifier(hls_params),
       media_playlist_factory_(new MediaPlaylistFactory()) {
+  if (hls_params.add_program_date_time) {
+    reference_time_ = absl::Now();
+  }
   const auto master_playlist_path =
       std::filesystem::u8path(hls_params.master_playlist_output);
   master_playlist_dir_ = master_playlist_path.parent_path().string();
-  const std::string& default_audio_langauge = hls_params.default_language;
-  const std::string& default_text_language =
-      hls_params.default_text_language.empty()
-          ? hls_params.default_language
-          : hls_params.default_text_language;
+  master_playlist_base_file_name_ = master_playlist_path.filename().string();
+  default_audio_language_ = hls_params.default_language;
+  default_text_language_ = hls_params.default_text_language.empty()
+                               ? hls_params.default_language
+                               : hls_params.default_text_language;
+
+  for (const auto& caption : hls_params.closed_captions) {
+    default_closed_captions_.push_back({caption.name, caption.language,
+                                       caption.channel, caption.is_default,
+                                       caption.autoselect});
+  }
+
+  // LIVE master playlist: fixed, un-suffixed path -- unaffected by
+  // rotation, exactly as before this feature existed.
   master_playlist_.reset(new MasterPlaylist(
-      master_playlist_path.filename(), default_audio_langauge,
-      default_text_language, hls_params.is_independent_segments));
+      master_playlist_base_file_name_, default_audio_language_,
+      default_text_language_, default_closed_captions_,
+      hls_params.is_independent_segments, hls_params.create_session_keys));
+
+  // ARCHIVE master playlist: hour-suffixed, parallel/additional output.
+  if (hls_params.rotate_manifest_hourly) {
+    rotation_start_time_ = absl::Now();
+    current_hour_ = absl::ToCivilHour(RotationNow(), absl::UTCTimeZone());
+    const std::string archive_master_file_name =
+        MakeHourlyFileName(master_playlist_base_file_name_, current_hour_);
+    archive_master_playlist_.reset(new MasterPlaylist(
+        archive_master_file_name, default_audio_language_,
+        default_text_language_, default_closed_captions_,
+        hls_params.is_independent_segments, hls_params.create_session_keys));
+    if (!hls_params.session_index_output.empty()) {
+      session_index_writer_.reset(
+          new SessionIndexWriter(hls_params.session_index_output));
+      session_index_writer_->AppendSegment(current_hour_,
+                                           archive_master_file_name);
+    }
+  }
 }
 
 SimpleHlsNotifier::~SimpleHlsNotifier() {}
@@ -300,18 +373,39 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
                                         uint32_t* stream_id) {
   DCHECK(stream_id);
   LOG(INFO)<<"NotifyNewHLSStream "<<*stream_id<<" name: "<<playlist_name<<" "<<name<<"seq: "<<sequence_number_<<std::endl;
-  const std::string relative_playlist_path = MakePathRelative(
+  const std::string base_playlist_path = MakePathRelative(
       playlist_name, std::filesystem::u8path(master_playlist_dir_));
 
+  // LIVE playlist: fixed path, exactly the pre-rotation-feature behavior.
   std::unique_ptr<MediaPlaylist> media_playlist =
-      media_playlist_factory_->Create(hls_params(), relative_playlist_path,
-                                      name, group_id);
+      media_playlist_factory_->Create(hls_params(), base_playlist_path, name,
+                                      group_id);
   MediaInfo adjusted_media_info = MakeMediaInfoPathsRelativeToPlaylist(
       media_info, hls_params().base_url, master_playlist_dir_,
       media_playlist->file_name());
   if (!media_playlist->SetMediaInfo(adjusted_media_info)) {
     LOG(ERROR) << "Failed to set media info for playlist " << playlist_name;
     return false;
+  }
+  media_playlist->SetReferenceTime(reference_time());
+
+  // ARCHIVE playlist: hour-suffixed, parallel/additional output -- only
+  // when rotation is enabled.
+  std::unique_ptr<MediaPlaylist> archive_media_playlist;
+  if (hls_params().rotate_manifest_hourly) {
+    const std::string archive_path =
+        MakeHourlyFileName(base_playlist_path, current_hour_);
+    archive_media_playlist = media_playlist_factory_->Create(
+        hls_params(), archive_path, name, group_id, /*is_rotation=*/true);
+    MediaInfo archive_adjusted_media_info = MakeMediaInfoPathsRelativeToPlaylist(
+        media_info, hls_params().base_url, master_playlist_dir_,
+        archive_media_playlist->file_name());
+    if (!archive_media_playlist->SetMediaInfo(archive_adjusted_media_info)) {
+      LOG(ERROR) << "Failed to set media info for archive playlist "
+                 << playlist_name;
+      return false;
+    }
+    archive_media_playlist->SetReferenceTime(reference_time());
   }
 
   MediaPlaylist::EncryptionMethod encryption_method =
@@ -329,24 +423,32 @@ bool SimpleHlsNotifier::NotifyNewStream(const MediaInfo& media_info,
     encryption_method = enc_method.value();
   }
 
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
   *stream_id = sequence_number_++;
   media_playlists_.push_back(media_playlist.get());
+  if (archive_media_playlist) {
+    archive_media_playlists_.push_back(archive_media_playlist.get());
+  }
   stream_map_[*stream_id].reset(
-      new StreamEntry{std::move(media_playlist), encryption_method});
+      new StreamEntry{std::move(media_playlist), encryption_method,
+                     std::move(archive_media_playlist), base_playlist_path,
+                     std::nullopt});
   return true;
 }
 
 bool SimpleHlsNotifier::NotifySampleDuration(uint32_t stream_id,
                                              int32_t sample_duration) {
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
   auto stream_iterator = stream_map_.find(stream_id);
   if (stream_iterator == stream_map_.end()) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
-  media_playlist->SetSampleDuration(sample_duration);
+  StreamEntry* entry = stream_iterator->second.get();
+  entry->media_playlist->SetSampleDuration(sample_duration);
+  if (entry->archive_media_playlist) {
+    entry->archive_media_playlist->SetSampleDuration(sample_duration);
+  }
   return true;
 }
 
@@ -356,13 +458,22 @@ bool SimpleHlsNotifier::NotifyNewSegment(uint32_t stream_id,
                                          int64_t duration,
                                          uint64_t start_byte_offset,
                                          uint64_t size) {
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
+  // Must run before the stream_map_ lookup below: rotation replaces every
+  // StreamEntry's archive MediaPlaylist, so any reference/iterator taken
+  // before it runs would dangle. The LIVE MediaPlaylist is never touched by
+  // rotation.
+  RotateManifestsIfNeeded();
   auto stream_iterator = stream_map_.find(stream_id);
   if (stream_iterator == stream_map_.end()) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
+  StreamEntry* entry = stream_iterator->second.get();
+
+  // --- LIVE path: exactly the pre-rotation-feature behavior, unaffected by
+  // HlsParams::rotate_manifest_hourly. ---
+  auto& media_playlist = entry->media_playlist;
   const std::string& segment_url =
       GenerateSegmentUrl(segment_name, hls_params().base_url,
                          master_playlist_dir_, media_playlist->file_name());
@@ -385,16 +496,54 @@ bool SimpleHlsNotifier::NotifyNewSegment(uint32_t stream_id,
     if (target_duration_updated) {
       for (MediaPlaylist* playlist : media_playlists_) {
         playlist->SetTargetDuration(target_duration_);
-        if (!WriteMediaPlaylist(master_playlist_dir_, playlist))
+        if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
+                                hls_params().event_to_vod_on_end_of_stream,
+                                end_stream))
           return false;
       }
     } else {
-      if (!WriteMediaPlaylist(master_playlist_dir_, media_playlist.get()))
+      if (!WriteMediaPlaylist(master_playlist_dir_, media_playlist.get(),
+                              hls_params().event_to_vod_on_end_of_stream,
+                              end_stream))
         return false;
     }
     if (!master_playlist_->WriteMasterPlaylist(
             hls_params().base_url, master_playlist_dir_, media_playlists_)) {
       LOG(ERROR) << "Failed to write master playlist.";
+      return false;
+    }
+  }
+
+  // --- ARCHIVE path: mirrors the same segment into the hourly-rotating,
+  // parallel DVR-style output. Writes unconditionally (not gated on
+  // playlist_type), since it's an independent concern from the live
+  // manifest's type. No-op unless rotate_manifest_hourly is true. ---
+  if (entry->archive_media_playlist) {
+    auto& archive_playlist = entry->archive_media_playlist;
+    const std::string& archive_segment_url = GenerateSegmentUrl(
+        segment_name, hls_params().base_url, master_playlist_dir_,
+        archive_playlist->file_name());
+    archive_playlist->AddSegment(archive_segment_url, start_time, duration,
+                                 start_byte_offset, size);
+
+    if (target_duration_updated) {
+      for (MediaPlaylist* playlist : archive_media_playlists_) {
+        playlist->SetTargetDuration(target_duration_);
+        if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
+                                /*event_to_vod_on_end_of_stream=*/false,
+                                end_stream))
+          return false;
+      }
+    } else {
+      if (!WriteMediaPlaylist(master_playlist_dir_, archive_playlist.get(),
+                              /*event_to_vod_on_end_of_stream=*/false,
+                              end_stream))
+        return false;
+    }
+    if (!archive_master_playlist_->WriteMasterPlaylist(
+            hls_params().base_url, master_playlist_dir_,
+            archive_media_playlists_)) {
+      LOG(ERROR) << "Failed to write archive master playlist.";
       return false;
     }
   }
@@ -405,37 +554,49 @@ bool SimpleHlsNotifier::NotifyKeyFrame(uint32_t stream_id,
                                        int64_t timestamp,
                                        uint64_t start_byte_offset,
                                        uint64_t size) {
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
   auto stream_iterator = stream_map_.find(stream_id);
   if (stream_iterator == stream_map_.end()) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
-  media_playlist->AddKeyFrame(timestamp, start_byte_offset, size);
+  StreamEntry* entry = stream_iterator->second.get();
+  entry->media_playlist->AddKeyFrame(timestamp, start_byte_offset, size);
+  if (entry->archive_media_playlist) {
+    entry->archive_media_playlist->AddKeyFrame(timestamp, start_byte_offset,
+                                               size);
+  }
   return true;
 }
 
 bool SimpleHlsNotifier::NotifyCueEvent(uint32_t stream_id, int64_t timestamp) {
-  absl::MutexLock lock(&lock_);
-  LOG(INFO)<<"SimpleHlsNotifier::NotifyCueEvent "<<stream_id<<std::endl;
+  absl::MutexLock lock(lock_);
   auto stream_iterator = stream_map_.find(stream_id);
   if (stream_iterator == stream_map_.end()) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
     return false;
   }
-  auto& media_playlist = stream_iterator->second->media_playlist;
-  media_playlist->AddPlacementOpportunity();
+  StreamEntry* entry = stream_iterator->second.get();
+  entry->media_playlist->AddPlacementOpportunity();
+  if (entry->archive_media_playlist) {
+    entry->archive_media_playlist->AddPlacementOpportunity();
+  }
   return true;
 }
 
-bool SimpleHlsNotifier::NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data) {
-  absl::MutexLock lock(&lock_);
+bool SimpleHlsNotifier::NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                                          uint32_t splice_event_id) {
+  absl::MutexLock lock(lock_);
   LOG(INFO)<<"SimpleHlsNotifier::NotifySCTE35Event notify all streams"<<std::endl;
   for (auto stream_iterator = stream_map_.begin(); stream_iterator != stream_map_.end(); ++stream_iterator) {
-    auto& media_playlist = stream_iterator->second->media_playlist;
+    StreamEntry* entry = stream_iterator->second.get();
+    auto& media_playlist = entry->media_playlist;
     LOG(INFO)<<"AddScte35Event to "<<media_playlist->name()<<" "<<media_playlist->file_name()<<std::endl;
-    media_playlist->AddScte35Event(timestamp,duration,cue_data);
+    media_playlist->AddScte35Event(timestamp,duration,cue_data,splice_event_id);
+    if (entry->archive_media_playlist) {
+      entry->archive_media_playlist->AddScte35Event(timestamp, duration,
+                                                    cue_data, splice_event_id);
+    }
   }
   return true;
 }
@@ -446,7 +607,7 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
     const std::vector<uint8_t>& system_id,
     const std::vector<uint8_t>& iv,
     const std::vector<uint8_t>& protection_system_specific_data) {
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
   auto stream_iterator = stream_map_.find(stream_id);
   if (stream_iterator == stream_map_.end()) {
     LOG(ERROR) << "Cannot find stream with ID: " << stream_id;
@@ -459,16 +620,64 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
       stream_iterator->second->encryption_method;
   LOG_IF(WARNING, encryption_method == MediaPlaylist::EncryptionMethod::kNone)
       << "Got encryption notification but the encryption method is NONE";
+
+  // AES-128 full-segment encryption: no DRM system, no KEYFORMAT attribute.
+  // The key URI is the raw 16-byte key file; players use it directly.
+  if (encryption_method == MediaPlaylist::EncryptionMethod::kAes128) {
+    const std::string key_uri = hls_params().key_uri;
+    if (key_uri.empty()) {
+      LOG(ERROR) << "AES-128 encryption requires --hls_key_uri to be set.";
+      return false;
+    }
+    // Pass empty key_id, empty key_format and key_format_versions so the
+    // EXT-X-KEY tag has only METHOD=AES-128, URI, and IV — as required by
+    // RFC 8216. KEYFORMAT defaults to "identity" when omitted.
+    const std::vector<uint8_t> empty_key_id;
+    EncryptionInfoParams info;
+    NotifyEncryptionToMediaPlaylist(
+        encryption_method, key_uri, empty_key_id, iv, /*key_format=*/"",
+        /*key_format_versions=*/"", media_playlist.get(), &info);
+    stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
+    return true;
+  }
+
   if (IsWidevineSystemId(system_id)) {
-    return HandleWidevineKeyFormats(encryption_method,
-                                    key_id, iv, protection_system_specific_data,
-                                    media_playlist.get());
+    EncryptionInfoParams info;
+    bool result = HandleWidevineKeyFormats(encryption_method, key_id, iv,
+                                           protection_system_specific_data,
+                                           media_playlist.get(), &info);
+    if (result) {
+      stream_iterator->second->last_encryption_info = info;
+      if (auto& archive = stream_iterator->second->archive_media_playlist) {
+        archive->AddEncryptionInfo(info.method, info.uri, info.key_id,
+                                   info.iv, info.key_format,
+                                   info.key_format_versions);
+      }
+    }
+    return result;
   }
 
   // Key Id does not need to be specified with "identity" and "sdk".
   const std::vector<uint8_t> empty_key_id;
 
   if (IsCommonSystemId(system_id)) {
+    const MediaPlaylist::EncryptionMethod encryption_method_from_stream =
+        stream_iterator->second->encryption_method;
+
+    if (encryption_method_from_stream ==
+        MediaPlaylist::EncryptionMethod::kSampleAesCenc) {
+      // We do NOT add the "identity" key format, because CENC must be managed
+      // by a specific DRM (like Widevine)
+      LOG(INFO) << "Skipping KEYFORMAT=\"identity\" for CENC content (stream "
+                << stream_id
+                << ") as it should be handled by a specific DRM system.";
+      return true;
+    }
+
     std::string key_uri = hls_params().key_uri;
     if (key_uri.empty()) {
       // Use key_id as the key_uri. The player needs to have custom logic to
@@ -476,8 +685,15 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
       std::string key_uri_data = VectorToString(key_id);
       key_uri = Base64EncodeData(kUriBase64Prefix, key_uri_data);
     }
+    EncryptionInfoParams info;
     NotifyEncryptionToMediaPlaylist(encryption_method, key_uri, empty_key_id,
-                                    iv, "identity", "", media_playlist.get());
+                                    iv, "identity", "", media_playlist.get(),
+                                    &info);
+    stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
   if (IsFairPlaySystemId(system_id) || IsLegacyFairPlaySystemId(system_id)) {
@@ -491,9 +707,15 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
 
     // FairPlay defines IV to be carried with the key, not the playlist.
     const std::vector<uint8_t> empty_iv;
+    EncryptionInfoParams info;
     NotifyEncryptionToMediaPlaylist(encryption_method, key_uri, empty_key_id,
                                     empty_iv, "com.apple.streamingkeydelivery",
-                                    "1", media_playlist.get());
+                                    "1", media_playlist.get(), &info);
+    stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
   if (IsPlayReadySystemId(system_id)) {
@@ -505,9 +727,15 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
                           b->pssh_data().size());
     std::string key_uri_data_base64 =
         Base64EncodeData(kUriBase64Utf16Prefix, pssh_data);
+    EncryptionInfoParams info;
     NotifyEncryptionToMediaPlaylist(encryption_method, key_uri_data_base64,
                                     empty_key_id, iv, "com.microsoft.playready",
-                                    "1", media_playlist.get());
+                                    "1", media_playlist.get(), &info);
+    stream_iterator->second->last_encryption_info = info;
+    if (auto& archive = stream_iterator->second->archive_media_playlist) {
+      archive->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                                 info.key_format, info.key_format_versions);
+    }
     return true;
   }
 
@@ -518,11 +746,25 @@ bool SimpleHlsNotifier::NotifyEncryptionUpdate(
   return true;
 }
 
+bool SimpleHlsNotifier::NotifyEndOfStream() {
+  end_stream = true;
+  return true;
+}
+
 bool SimpleHlsNotifier::Flush() {
-  absl::MutexLock lock(&lock_);
+  absl::MutexLock lock(lock_);
+  // LIVE: exactly the pre-rotation-feature behavior, unaffected by
+  // rotate_manifest_hourly.
   for (MediaPlaylist* playlist : media_playlists_) {
-    playlist->SetTargetDuration(target_duration_);
-    if (!WriteMediaPlaylist(master_playlist_dir_, playlist))
+    if (hls_params().per_playlist_target_duration) {
+      playlist->SetTargetDuration(
+          static_cast<int32_t>(ceil(playlist->GetLongestSegmentDuration())));
+    } else {
+      playlist->SetTargetDuration(target_duration_);
+    }
+    if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
+                            hls_params().event_to_vod_on_end_of_stream,
+                            end_stream))
       return false;
   }
   if (!master_playlist_->WriteMasterPlaylist(
@@ -530,7 +772,115 @@ bool SimpleHlsNotifier::Flush() {
     LOG(ERROR) << "Failed to write master playlist.";
     return false;
   }
+
+  // ARCHIVE: process exit always closes out the final open hour, just like
+  // any other rotation would -- so it always gets EXT-X-ENDLIST, regardless
+  // of the live playlist's --hls_playlist_type/event_to_vod_on_end_of_stream.
+  for (MediaPlaylist* playlist : archive_media_playlists_) {
+    if (hls_params().per_playlist_target_duration) {
+      playlist->SetTargetDuration(
+          static_cast<int32_t>(ceil(playlist->GetLongestSegmentDuration())));
+    } else {
+      playlist->SetTargetDuration(target_duration_);
+    }
+    if (!WriteMediaPlaylist(master_playlist_dir_, playlist,
+                            /*event_to_vod_on_end_of_stream=*/false,
+                            end_stream, /*force_endlist=*/true))
+      return false;
+  }
+  if (archive_master_playlist_) {
+    if (!archive_master_playlist_->WriteMasterPlaylist(
+            hls_params().base_url, master_playlist_dir_,
+            archive_media_playlists_)) {
+      LOG(ERROR) << "Failed to write archive master playlist.";
+      return false;
+    }
+  }
   return true;
+}
+
+absl::Time SimpleHlsNotifier::RotationNow() const {
+  const int32_t test_interval_sec =
+      hls_params().manifest_rotation_test_interval_seconds;
+  if (test_interval_sec <= 0) {
+    return absl::Now();
+  }
+  // TEST-ONLY: dilate elapsed wall-clock time so that roughly
+  // test_interval_sec real seconds maps to one simulated UTC hour, letting
+  // rotation be exercised in short integration tests without waiting for a
+  // genuine hour to elapse.
+  const absl::Duration elapsed = absl::Now() - rotation_start_time_;
+  return rotation_start_time_ + elapsed * (3600.0 / test_interval_sec);
+}
+
+void SimpleHlsNotifier::RotateManifestsIfNeeded() {
+  if (!hls_params().rotate_manifest_hourly) {
+    return;
+  }
+  const absl::CivilHour new_hour =
+      absl::ToCivilHour(RotationNow(), absl::UTCTimeZone());
+  if (new_hour == current_hour_) {
+    return;
+  }
+
+  // Never split an open SCTE-35 ad break across two hourly archive files --
+  // defer and retry on the next segment instead. The LIVE playlists are
+  // unaffected by rotation entirely, so only archive playlists matter here.
+  for (MediaPlaylist* playlist : archive_media_playlists_) {
+    if (playlist->HasOpenAdBreak()) {
+      return;
+    }
+  }
+
+  // 1. Final, ENDLIST-forced write of the archive hour that's closing.
+  for (MediaPlaylist* playlist : archive_media_playlists_) {
+    playlist->SetTargetDuration(target_duration_);
+    WriteMediaPlaylist(master_playlist_dir_, playlist,
+                       /*event_to_vod_on_end_of_stream=*/false, end_stream,
+                       /*force_endlist=*/true);
+  }
+  if (archive_master_playlist_) {
+    archive_master_playlist_->WriteMasterPlaylist(
+        hls_params().base_url, master_playlist_dir_, archive_media_playlists_);
+  }
+
+  // 2. Fresh archive MediaPlaylist per stream. stream_map_ is a std::map
+  // keyed by registration-order sequence_number_, so iterating it preserves
+  // the same order archive_media_playlists_ was originally built in.
+  archive_media_playlists_.clear();
+  for (auto& kv : stream_map_) {
+    StreamEntry* entry = kv.second.get();
+    const std::string new_path =
+        MakeHourlyFileName(entry->base_playlist_path, new_hour);
+    std::unique_ptr<MediaPlaylist> fresh = media_playlist_factory_->Create(
+        hls_params(), new_path, entry->archive_media_playlist->name(),
+        entry->archive_media_playlist->group_id(), /*is_rotation=*/true);
+    fresh->SetMediaInfo(entry->archive_media_playlist->GetMediaInfo());
+    fresh->SetReferenceTime(reference_time());
+    fresh->SetTargetDuration(target_duration_);
+    if (entry->last_encryption_info) {
+      const EncryptionInfoParams& info = *entry->last_encryption_info;
+      fresh->AddEncryptionInfo(info.method, info.uri, info.key_id, info.iv,
+                               info.key_format, info.key_format_versions);
+    }
+    archive_media_playlists_.push_back(fresh.get());
+    entry->archive_media_playlist = std::move(fresh);
+  }
+
+  // 3. Swap in a new archive MasterPlaylist with the hour-suffixed
+  // filename -- MasterPlaylist's file_name_ is const, so rotating means a
+  // new instance.
+  const std::string new_master_file_name =
+      MakeHourlyFileName(master_playlist_base_file_name_, new_hour);
+  archive_master_playlist_.reset(new MasterPlaylist(
+      new_master_file_name, default_audio_language_, default_text_language_,
+      default_closed_captions_, hls_params().is_independent_segments,
+      hls_params().create_session_keys));
+
+  current_hour_ = new_hour;
+  if (session_index_writer_) {
+    session_index_writer_->AppendSegment(current_hour_, new_master_file_name);
+  }
 }
 
 }  // namespace hls

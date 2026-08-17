@@ -4,8 +4,12 @@
 
 #include <packager/media/base/byte_queue.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+
 #include <absl/log/check.h>
-#include <absl/log/log.h>
 
 namespace shaka {
 namespace media {
@@ -17,8 +21,7 @@ ByteQueue::ByteQueue()
     : buffer_(new uint8_t[kDefaultQueueSize]),
       size_(kDefaultQueueSize),
       offset_(0),
-      used_(0) {
-}
+      used_(0) {}
 
 ByteQueue::~ByteQueue() {}
 

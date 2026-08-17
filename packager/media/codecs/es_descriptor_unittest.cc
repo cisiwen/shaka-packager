@@ -4,6 +4,11 @@
 
 #include <packager/media/codecs/es_descriptor.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -56,7 +61,7 @@ TEST(ESDescriptorTest, SingleByteLengthTest) {
   EXPECT_THAT(
       std::vector<uint8_t>(writer.Buffer(), writer.Buffer() + writer.Size()),
       ElementsAreArray(kBuffer));
-  
+
   EXPECT_EQ(0u, es_desc.esid());
   const size_t kEsIdOffset = 3;
   const uint8_t kEsId = 5;

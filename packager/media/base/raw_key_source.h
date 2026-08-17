@@ -7,12 +7,14 @@
 #ifndef PACKAGER_MEDIA_BASE_RAW_KEY_SOURCE_H_
 #define PACKAGER_MEDIA_BASE_RAW_KEY_SOURCE_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <packager/crypto_params.h>
 #include <packager/media/base/key_source.h>
+#include <packager/status.h>
 
 namespace shaka {
 namespace media {

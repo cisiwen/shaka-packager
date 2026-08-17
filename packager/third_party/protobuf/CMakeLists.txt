@@ -17,6 +17,7 @@ set(protobuf_WITH_ZLIB OFF)
 
 # Turn these features on.
 set(protobuf_BUILD_PROTOC_BINARIES ON)
+set(protobuf_BUILD_LIBUPB ON)
 set(protobuf_DISABLE_RTTI ON)
 
 # The latest version of protobuf requires a path to ABSL.
@@ -30,3 +31,6 @@ add_definitions(-DNDEBUG)
 
 # With these set in scope of this folder, load the library's own CMakeLists.txt.
 add_subdirectory(source)
+
+# Build generated python sources for the protobuf library.
+include("protobuf_py.cmake")

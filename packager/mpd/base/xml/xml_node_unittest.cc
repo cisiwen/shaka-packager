@@ -6,16 +6,19 @@
 
 #include <packager/mpd/base/xml/xml_node.h>
 
+#include <cstdint>
 #include <list>
+#include <string>
+#include <utility>
 
 #include <absl/flags/declare.h>
 #include <absl/flags/flag.h>
-#include <absl/log/log.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <libxml/tree.h>
 
 #include <packager/flag_saver.h>
+#include <packager/mpd/base/content_protection_element.h>
 #include <packager/mpd/base/segment_info.h>
 #include <packager/mpd/test/mpd_builder_test_helper.h>
 #include <packager/mpd/test/xml_compare.h>
@@ -59,7 +62,6 @@ TEST(XmlNodeTest, MetaTestXmlElementsEqual) {
       "  </B>\n"
       "  <C />\n"
       "</A>";
-
 
   // This is same as kXml1 but the attributes are reordered. Note that the
   // children are not reordered.
@@ -137,9 +139,8 @@ TEST(XmlNodeTest, MetaTestXmlElementsEqual) {
 // But if it is run on <B> for the first XML, it will return "content1", but
 // for second XML will return "c".
 TEST(XmlNodeTest, MetaTestXmlEqualDifferentContent) {
-  ASSERT_FALSE(XmlEqual(
-      "<A><B>content1</B><B>content2</B></A>",
-      "<A><B>c</B><B>ontent1content2</B></A>"));
+  ASSERT_FALSE(XmlEqual("<A><B>content1</B><B>content2</B></A>",
+                        "<A><B>c</B><B>ontent1content2</B></A>"));
 }
 
 TEST(XmlNodeTest, ExtractReferencedNamespaces) {
@@ -219,8 +220,7 @@ TEST(XmlNodeTest, AddEC3AudioInfo) {
   audio_info.set_codec("ec-3");
   audio_info.set_sampling_frequency(48000);
   audio_info.mutable_codec_specific_data()->set_channel_mask(0xF801);
-  audio_info.mutable_codec_specific_data()->set_channel_mpeg_value(
-      0xFFFFFFFF);
+  audio_info.mutable_codec_specific_data()->set_channel_mpeg_value(0xFFFFFFFF);
 
   RepresentationXmlNode representation;
   ASSERT_TRUE(representation.AddAudioInfo(audio_info));
@@ -563,8 +563,7 @@ TEST_F(LiveSegmentTimelineTest, LastSegmentNumberSupplementalProperty) {
 }
 
 // Creating a separate Test Suite for RepresentationXmlNode::AddVODOnlyInfo
-class OnDemandVODSegmentTest : public ::testing::Test {
-};
+class OnDemandVODSegmentTest : public ::testing::Test {};
 
 TEST_F(OnDemandVODSegmentTest, SegmentBase) {
   const char kTestMediaInfo[] =
@@ -642,10 +641,68 @@ TEST_F(OnDemandVODSegmentTest, TextInfoWithPresentationOffset) {
 
   EXPECT_THAT(representation,
               XmlNodeEqual("<Representation>"
-                           "<SegmentList presentationTimeOffset=\"100\">"
-                           "<SegmentURL media=\"subtitle.xml\"/>"
-                           "</SegmentList>"
+                           "<BaseURL>subtitle.xml</BaseURL>"
+                           "<SegmentBase presentationTimeOffset=\"100\"/>"
                            "</Representation>"));
+}
+
+// Regression test for
+// https://github.com/shaka-project/shaka-packager/issues/1433. A VTT text track
+// (the exact codec reported in the issue) with a non-zero
+// presentationTimeOffset — i.e. any period after the first — must produce
+// BaseURL + SegmentBase, NOT SegmentList.
+TEST_F(OnDemandVODSegmentTest, TextInfoVttWithPresentationOffset) {
+  const char kTextMediaInfo[] =
+      "text_info {\n"
+      "  codec: 'wvtt'\n"
+      "  language: 'en'\n"
+      "  type: SUBTITLE\n"
+      "}\n"
+      "media_duration_seconds: 35\n"
+      "bandwidth: 0\n"
+      "media_file_url: 'en-US.vtt'\n"
+      "container_type: CONTAINER_TEXT\n"
+      "presentation_time_offset: 1283031\n";
+
+  const MediaInfo media_info = ConvertToMediaInfo(kTextMediaInfo);
+
+  RepresentationXmlNode representation;
+  ASSERT_TRUE(representation.AddVODOnlyInfo(media_info, false, 100));
+
+  // Must use BaseURL + SegmentBase, not SegmentList + SegmentURL.
+  EXPECT_THAT(representation,
+              XmlNodeEqual("<Representation>"
+                           "<BaseURL>en-US.vtt</BaseURL>"
+                           "<SegmentBase presentationTimeOffset=\"1283031\"/>"
+                           "</Representation>"));
+}
+
+// Period 0 has presentationTimeOffset == 0, which SetPresentationTimeOffset()
+// deliberately skips (proto field stays unset). The output must be identical
+// to a text track with no PTO at all — just a bare BaseURL, no SegmentBase.
+// This is the "period 0" half of the multi-period consistency check.
+TEST_F(OnDemandVODSegmentTest, TextInfoWithZeroPresentationOffset) {
+  const char kTextMediaInfo[] =
+      "text_info {\n"
+      "  codec: 'wvtt'\n"
+      "  language: 'en'\n"
+      "  type: SUBTITLE\n"
+      "}\n"
+      "media_duration_seconds: 35\n"
+      "bandwidth: 0\n"
+      "media_file_url: 'en-US.vtt'\n"
+      "container_type: CONTAINER_TEXT\n";
+  // Note: presentation_time_offset intentionally absent (equivalent to PTO=0).
+
+  const MediaInfo media_info = ConvertToMediaInfo(kTextMediaInfo);
+
+  RepresentationXmlNode representation;
+  ASSERT_TRUE(representation.AddVODOnlyInfo(media_info, false, 100));
+
+  // No SegmentBase needed when PTO is 0 — just BaseURL.
+  EXPECT_THAT(representation, XmlNodeEqual("<Representation>"
+                                           "<BaseURL>en-US.vtt</BaseURL>"
+                                           "</Representation>"));
 }
 
 TEST_F(OnDemandVODSegmentTest, SegmentListWithoutUrls) {

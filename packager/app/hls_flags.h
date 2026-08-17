@@ -7,8 +7,11 @@
 #ifndef PACKAGER_APP_HLS_FLAGS_H_
 #define PACKAGER_APP_HLS_FLAGS_H_
 
+#include <cstdint>
+#include <optional>
+#include <string>
+
 #include <absl/flags/declare.h>
-#include <absl/flags/flag.h>
 
 ABSL_DECLARE_FLAG(std::string, hls_master_playlist_output);
 ABSL_DECLARE_FLAG(std::string, hls_base_url);
@@ -17,5 +20,10 @@ ABSL_DECLARE_FLAG(std::string, hls_key_uri);
 ABSL_DECLARE_FLAG(std::string, hls_playlist_type);
 ABSL_DECLARE_FLAG(int32_t, hls_media_sequence_number);
 ABSL_DECLARE_FLAG(std::optional<double>, hls_start_time_offset);
+ABSL_DECLARE_FLAG(bool, create_session_keys);
+ABSL_DECLARE_FLAG(bool, add_program_date_time);
+ABSL_DECLARE_FLAG(bool, hls_rotate_manifest_hourly);
+ABSL_DECLARE_FLAG(std::string, hls_session_index_output);
+ABSL_DECLARE_FLAG(int32_t, hls_manifest_rotation_test_interval_seconds);
 
 #endif  // PACKAGER_APP_HLS_FLAGS_H_

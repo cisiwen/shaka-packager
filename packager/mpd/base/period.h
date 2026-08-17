@@ -9,9 +9,12 @@
 #ifndef PACKAGER_MPD_BASE_PERIOD_H_
 #define PACKAGER_MPD_BASE_PERIOD_H_
 
+#include <cstdint>
 #include <list>
 #include <map>
+#include <memory>
 #include <optional>
+#include <string>
 
 #include <packager/mpd/base/event_stream.h>
 #include <packager/mpd/base/adaptation_set.h>

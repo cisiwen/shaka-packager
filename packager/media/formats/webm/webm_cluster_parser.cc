@@ -5,6 +5,13 @@
 #include <packager/media/formats/webm/webm_cluster_parser.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <absl/base/internal/endian.h>
@@ -12,12 +19,24 @@
 #include <absl/log/log.h>
 
 #include <packager/macros/logging.h>
+#include <packager/media/base/audio_stream_info.h>
+#include <packager/media/base/decrypt_config.h>
+#include <packager/media/base/decryptor_source.h>
+#include <packager/media/base/key_source.h>
+#include <packager/media/base/media_parser.h>
+#include <packager/media/base/media_sample.h>
+#include <packager/media/base/stream_info.h>
 #include <packager/media/base/timestamp.h>
+#include <packager/media/base/video_stream_info.h>
 #include <packager/media/codecs/vp8_parser.h>
 #include <packager/media/codecs/vp9_parser.h>
+#include <packager/media/codecs/vp_codec_configuration_record.h>
+#include <packager/media/codecs/vpx_parser.h>
 #include <packager/media/codecs/webvtt_util.h>
 #include <packager/media/formats/webm/webm_constants.h>
 #include <packager/media/formats/webm/webm_crypto_helpers.h>
+#include <packager/media/formats/webm/webm_parser.h>
+#include <packager/media/formats/webm/webm_tracks_parser.h>
 #include <packager/media/formats/webm/webm_webvtt_parser.h>
 
 namespace shaka {
@@ -70,8 +89,7 @@ WebMClusterParser::WebMClusterParser(
       video_stream_info_->set_is_encrypted(false);
   }
   for (WebMTracksParser::TextTracks::const_iterator it = text_tracks.begin();
-       it != text_tracks.end();
-       ++it) {
+       it != text_tracks.end(); ++it) {
     text_track_map_.insert(std::make_pair(
         it->first, Track(it->first, false, kNoTimestamp, new_sample_cb)));
   }
@@ -276,8 +294,7 @@ bool WebMClusterParser::OnBinary(int id, const uint8_t* data, int size) {
       // demuxer's behavior.
       block_additional_data_size_ = size + sizeof(block_add_id);
       block_additional_data_.reset(new uint8_t[block_additional_data_size_]);
-      memcpy(block_additional_data_.get(), &block_add_id,
-             sizeof(block_add_id));
+      memcpy(block_additional_data_.get(), &block_add_id, sizeof(block_add_id));
       memcpy(block_additional_data_.get() + 8, data, size);
       return true;
     }
@@ -371,10 +388,9 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
     int data_offset = 0;
     if (!encryption_key_id.empty() &&
         !WebMCreateDecryptConfig(
-             data, size,
-             reinterpret_cast<const uint8_t*>(encryption_key_id.data()),
-             encryption_key_id.size(),
-             &decrypt_config, &data_offset)) {
+            data, size,
+            reinterpret_cast<const uint8_t*>(encryption_key_id.data()),
+            encryption_key_id.size(), &decrypt_config, &data_offset)) {
       return false;
     }
 
@@ -412,8 +428,7 @@ bool WebMClusterParser::OnBlock(bool is_simple_block,
     WebMWebVTTParser::Parse(data, size, &id, &settings, &content);
 
     std::vector<uint8_t> side_data;
-    MakeSideData(id.begin(), id.end(),
-                 settings.begin(), settings.end(),
+    MakeSideData(id.begin(), id.end(), settings.begin(), settings.end(),
                  &side_data);
 
     buffer = MediaSample::CopyFrom(
@@ -501,10 +516,8 @@ WebMClusterParser::Track::~Track() {}
 
 bool WebMClusterParser::Track::EmitBuffer(
     const std::shared_ptr<MediaSample>& buffer) {
-  DVLOG(2) << "EmitBuffer() : " << track_num_
-           << " ts " << buffer->pts()
-           << " dur " << buffer->duration()
-           << " kf " << buffer->is_key_frame()
+  DVLOG(2) << "EmitBuffer() : " << track_num_ << " ts " << buffer->pts()
+           << " dur " << buffer->duration() << " kf " << buffer->is_key_frame()
            << " size " << buffer->data_size();
 
   if (last_added_buffer_missing_duration_.get()) {
@@ -513,12 +526,10 @@ bool WebMClusterParser::Track::EmitBuffer(
     last_added_buffer_missing_duration_->set_duration(derived_duration);
 
     DVLOG(2) << "EmitBuffer() : applied derived duration to held-back buffer : "
-             << " ts "
-             << last_added_buffer_missing_duration_->pts()
-             << " dur "
-             << last_added_buffer_missing_duration_->duration()
-             << " kf " << last_added_buffer_missing_duration_->is_key_frame()
-             << " size " << last_added_buffer_missing_duration_->data_size();
+             << " ts " << last_added_buffer_missing_duration_->pts() << " dur "
+             << last_added_buffer_missing_duration_->duration() << " kf "
+             << last_added_buffer_missing_duration_->is_key_frame() << " size "
+             << last_added_buffer_missing_duration_->data_size();
     std::shared_ptr<MediaSample> updated_buffer =
         last_added_buffer_missing_duration_;
     last_added_buffer_missing_duration_ = NULL;
@@ -587,12 +598,9 @@ bool WebMClusterParser::Track::EmitBufferHelp(
     }
 
     if (orig_duration_estimate != estimated_next_frame_duration_) {
-      DVLOG(3) << "Updated duration estimate:"
-               << orig_duration_estimate
-               << " -> "
-               << estimated_next_frame_duration_
-               << " at timestamp: "
-               << buffer->dts();
+      DVLOG(3) << "Updated duration estimate:" << orig_duration_estimate
+               << " -> " << estimated_next_frame_duration_
+               << " at timestamp: " << buffer->dts();
     }
   }
 
@@ -624,14 +632,12 @@ int64_t WebMClusterParser::Track::GetDurationEstimate() {
 
 void WebMClusterParser::ResetTextTracks() {
   for (TextTrackMap::iterator it = text_track_map_.begin();
-       it != text_track_map_.end();
-       ++it) {
+       it != text_track_map_.end(); ++it) {
     it->second.Reset();
   }
 }
 
-WebMClusterParser::Track*
-WebMClusterParser::FindTextTrack(int track_num) {
+WebMClusterParser::Track* WebMClusterParser::FindTextTrack(int track_num) {
   const TextTrackMap::iterator it = text_track_map_.find(track_num);
 
   if (it == text_track_map_.end())

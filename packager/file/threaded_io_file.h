@@ -8,8 +8,11 @@
 #define PACKAGER_FILE_THREADED_IO_FILE_H_
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
+#include <vector>
 
+#include <absl/base/thread_annotations.h>
 #include <absl/synchronization/mutex.h>
 
 #include <packager/file.h>

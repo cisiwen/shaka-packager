@@ -6,14 +6,26 @@
 
 #include <packager/media/base/muxer.h>
 
-#include <algorithm>
-#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include <absl/log/log.h>
 
 #include <packager/macros/compiler.h>
-#include <packager/macros/logging.h>
 #include <packager/macros/status.h>
+#include <packager/media/base/encryption_config.h>
+#include <packager/media/base/media_handler.h>
 #include <packager/media/base/media_sample.h>
+#include <packager/media/base/muxer_options.h>
 #include <packager/media/base/muxer_util.h>
+#include <packager/media/base/text_sample.h>
+#include <packager/media/event/muxer_listener.h>
+#include <packager/media/event/progress_listener.h>
+#include <packager/status.h>
+#include <packager/utils/clock.h>
 
 namespace shaka {
 namespace media {
@@ -86,7 +98,8 @@ Status Muxer::Process(std::unique_ptr<StreamData> stream_data) {
             static_cast<int64_t>(time_in_seconds * time_scale);
         LOG(INFO) <<"SCTE-35 processed in muxer: "<<stream_data->scte35_event->start_time()<<" duration: "<<stream_data->scte35_event->duration()<<std::endl;
         muxer_listener_->OnSCTE35Event(scaled_time, stream_data->scte35_event->duration(),
-                                    stream_data->scte35_event->id());
+                                    stream_data->scte35_event->id(),
+                                    stream_data->scte35_event->splice_event_id());
 
         // Finalize and re-initialize Muxer to generate different content files.
         // Uncomment it after fixing errors

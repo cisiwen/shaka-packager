@@ -8,23 +8,37 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <ctime>
 #include <filesystem>
+#include <iomanip>
+#include <list>
+#include <map>
 #include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <utility>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
-#include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
 #include <absl/synchronization/mutex.h>
+#include <libxml/parser.h>
 
 #include <packager/file/file_util.h>
 #include <packager/macros/classes.h>
 #include <packager/macros/logging.h>
 #include <packager/media/base/rcheck.h>
 #include <packager/mpd/base/adaptation_set.h>
+#include <packager/mpd/base/mpd_options.h>
 #include <packager/mpd/base/mpd_utils.h>
 #include <packager/mpd/base/period.h>
 #include <packager/mpd/base/representation.h>
+#include <packager/mpd/base/xml/xml_node.h>
+#include <packager/mpd_params.h>
+#include <packager/utils/clock.h>
 #include <packager/version/version.h>
 
 namespace shaka {
@@ -97,7 +111,7 @@ bool SetIfPositive(const char* attr_name, double value, XmlNode* mpd) {
 class LibXmlInitializer {
  public:
   LibXmlInitializer() : initialized_(false) {
-    absl::MutexLock lock(&lock_);
+    absl::MutexLock lock(lock_);
     if (!initialized_) {
       xmlInitParser();
       initialized_ = true;
@@ -105,7 +119,7 @@ class LibXmlInitializer {
   }
 
   ~LibXmlInitializer() {
-    absl::MutexLock lock(&lock_);
+    absl::MutexLock lock(lock_);
     if (initialized_) {
       xmlCleanupParser();
       initialized_ = false;
@@ -202,8 +216,7 @@ std::optional<xml::XmlNode> MpdBuilder::GenerateMpd() {
 
   static const char kOnDemandProfile[] =
       "urn:mpeg:dash:profile:isoff-on-demand:2011";
-  static const char kLiveProfile[] =
-      "urn:mpeg:dash:profile:isoff-live:2011";
+  static const char kLiveProfile[] = "urn:mpeg:dash:profile:isoff-live:2011";
   switch (mpd_options_.dash_profile) {
     case DashProfile::kOnDemand:
       if (!mpd.SetStringAttribute("profiles", kOnDemandProfile))
@@ -339,6 +352,13 @@ float MpdBuilder::GetStaticMpdDuration() {
   return total_duration;
 }
 
+void MpdBuilder::FinalizeDynamicMpd() {
+  if (mpd_options_.mpd_params.event_to_vod_on_end_of_stream) {
+    mpd_options_.dash_profile = DashProfile::kOnDemand;
+    mpd_options_.mpd_type = MpdType::kStatic;
+  }
+}
+
 bool MpdBuilder::GetEarliestTimestamp(double* timestamp_seconds) {
   DCHECK(timestamp_seconds);
   DCHECK(!periods_.empty());
@@ -401,8 +421,28 @@ void MpdBuilder::UpdatePeriodDurationAndPresentationTimestamp() {
       }
     }
 
-    if (!earliest_start_time)
-      return;
+    if (!earliest_start_time) {
+      // No segment timestamps were found for this period. This happens for
+      // periods 1+ in multi-period on-demand DASH when representations are
+      // created via CopyRepresentation() in SimpleMpdNotifier::NotifyCueEvent()
+      // — the copy constructor does not copy segment_infos_, so
+      // GetStartAndEndTimestamps() returns false for all copied
+      // representations.
+      //
+      // Fall back to the period's own start time (set from the cue event
+      // timestamp that triggered the period boundary) as the
+      // presentationTimeOffset for every representation in this period, so that
+      // players know which byte-offset within the shared single-file asset to
+      // begin reading from.
+      const double period_start_time = period->start_time_in_seconds();
+      for (const auto& adaptation_set : period->GetAdaptationSets()) {
+        for (const auto& representation :
+             adaptation_set->GetRepresentations()) {
+          representation->SetPresentationTimeOffset(period_start_time);
+        }
+      }
+      continue;
+    }
 
     period->set_duration_seconds(*latest_end_time - *earliest_start_time);
 

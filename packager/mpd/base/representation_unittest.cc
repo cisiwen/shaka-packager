@@ -7,6 +7,11 @@
 #include <packager/mpd/base/representation.h>
 
 #include <cinttypes>
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <string>
+#include <utility>
 
 #include <absl/flags/declare.h>
 #include <absl/flags/flag.h>
@@ -18,7 +23,9 @@
 #include <packager/file.h>
 #include <packager/file/file_closer.h>
 #include <packager/flag_saver.h>
+#include <packager/mpd/base/bandwidth_estimator.h>
 #include <packager/mpd/base/mpd_options.h>
+#include <packager/mpd/base/segment_info.h>
 #include <packager/mpd/test/mpd_builder_test_helper.h>
 #include <packager/mpd/test/xml_compare.h>
 
@@ -1401,6 +1408,27 @@ TEST_F(RepresentationDeleteSegmentsTest, ManyRepeatingSegments) {
       absl::StrFormat(kStringPrintTemplate, last_available_segment_index)));
   EXPECT_TRUE(SegmentDeleted(
       absl::StrFormat(kStringPrintTemplate, last_available_segment_index - 1)));
+}
+
+// Verify that if a segment is already deleted (e.g. by a racing HLS packager),
+// the deletion of subsequent segments is not blocked.
+TEST_F(RepresentationDeleteSegmentsTest, FileAlreadyDeleted) {
+  for (int i = 0; i < kMaxNumSegmentsAvailable; ++i) {
+    AddSegments(kInitialStartTime + i * kDuration, kDuration, kSize, kNoRepeat);
+  }
+
+  // Manually delete the first segment to simulate a race condition.
+  File::Delete(absl::StrFormat(kStringPrintTemplate, 1).c_str());
+
+  // Add more segments to trigger the deletion of the first two segments.
+  AddSegments(kInitialStartTime + kMaxNumSegmentsAvailable * kDuration,
+              kDuration, kSize, kNoRepeat);
+  AddSegments(kInitialStartTime + (kMaxNumSegmentsAvailable + 1) * kDuration,
+              kDuration, kSize, kNoRepeat);
+
+  // The second segment should still be deleted successfully, even though the
+  // first segment was already deleted before the packager tried to delete it.
+  EXPECT_TRUE(SegmentDeleted(absl::StrFormat(kStringPrintTemplate, 2)));
 }
 
 }  // namespace shaka

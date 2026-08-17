@@ -6,20 +6,31 @@
 
 #include <packager/media/base/widevine_key_source.h>
 
-#include <algorithm>
 #include <cinttypes>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <iterator>
+#include <memory>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 #include <absl/strings/escaping.h>
 #include <absl/strings/str_format.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <packager/crypto_params.h>
 #include <packager/macros/classes.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/key_fetcher.h>
+#include <packager/media/base/key_source.h>
 #include <packager/media/base/protection_system_ids.h>
+#include <packager/media/base/protection_system_specific_info.h>
 #include <packager/media/base/request_signer.h>
-#include <packager/media/base/widevine_pssh_generator.h>
+#include <packager/status.h>
 #include <packager/status/status_test_util.h>
 
 using ::testing::_;
@@ -434,8 +445,7 @@ TEST_P(WidevineKeySourceParameterizedTest, HttpFetchFailure) {
 
   CreateWidevineKeySource();
   widevine_key_source_->set_signer(std::move(mock_request_signer_));
-  ASSERT_EQ(kMockStatus,
-            widevine_key_source_->FetchKeys(content_id_, kPolicy));
+  ASSERT_EQ(kMockStatus, widevine_key_source_->FetchKeys(content_id_, kPolicy));
 }
 
 TEST_P(WidevineKeySourceParameterizedTest, LicenseStatusCencOK) {
@@ -459,8 +469,7 @@ TEST_P(WidevineKeySourceParameterizedTest, LicenseStatusCencMalformedResponse) {
 
   CreateWidevineKeySource();
   ASSERT_EQ(error::SERVER_ERROR,
-            widevine_key_source_->FetchKeys(content_id_, kPolicy)
-            .error_code());
+            widevine_key_source_->FetchKeys(content_id_, kPolicy).error_code());
 }
 
 TEST_P(WidevineKeySourceParameterizedTest, LicenseStatusCencWithPsshBoxOK) {
@@ -575,8 +584,7 @@ std::string GenerateMockKeyRotationLicenseResponse(
   const std::string kTrackTypes[] = {"SD", "HD", "UHD1", "UHD2", "AUDIO"};
   std::string tracks;
   for (uint32_t index = initial_crypto_period_index;
-       index < initial_crypto_period_index + crypto_period_count;
-       ++index) {
+       index < initial_crypto_period_index + crypto_period_count; ++index) {
     for (const std::string& track_type : kTrackTypes) {
       if (!tracks.empty())
         tracks += ",";

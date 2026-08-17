@@ -4,8 +4,11 @@
 
 #include <packager/media/formats/mp2t/adts_header.h>
 
-#include <absl/log/log.h>
-#include <absl/strings/numbers.h>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include <packager/utils/hex_parser.h>
@@ -56,9 +59,8 @@ TEST_F(AdtsHeaderTest, ParseSuccess) {
   const uint32_t kExpectedSamplingFrequency(44100);
   const uint8_t kExpectedNumChannels(2);
   AdtsHeader adts_header;
-  EXPECT_EQ(adts_frame_.size(),
-            adts_header.GetFrameSizeWithoutParsing(adts_frame_.data(),
-                                                   adts_frame_.size()));
+  EXPECT_EQ(adts_frame_.size(), adts_header.GetFrameSizeWithoutParsing(
+                                    adts_frame_.data(), adts_frame_.size()));
   ASSERT_TRUE(adts_header.Parse(adts_frame_.data(), adts_frame_.size()));
   EXPECT_EQ(adts_frame_.size(), adts_header.GetFrameSize());
   EXPECT_EQ(kExpectedHeaderSize, adts_header.GetHeaderSize());

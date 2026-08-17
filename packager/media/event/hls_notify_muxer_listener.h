@@ -7,11 +7,13 @@
 #ifndef PACKAGER_MEDIA_EVENT_HLS_NOTIFY_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_HLS_NOTIFY_MUXER_LISTENER_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <packager/media/base/fourccs.h>
 #include <packager/media/event/event_info.h>
 #include <packager/media/event/muxer_listener.h>
 #include <packager/mpd/base/media_info.pb.h>
@@ -78,7 +80,8 @@ class HlsNotifyMuxerListener : public MuxerListener {
                   uint64_t start_byte_offset,
                   uint64_t size) override;
   void OnCueEvent(int64_t timestamp, const std::string& cue_data) override;
-  void OnSCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data) override;
+  void OnSCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                    uint32_t splice_event_id) override;
   /// @}
 
  private:

@@ -7,7 +7,8 @@
 #ifndef PACKAGER_MEDIA_BASE_AES_CRYPTOR_H_
 #define PACKAGER_MEDIA_BASE_AES_CRYPTOR_H_
 
-#include <memory>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 

@@ -7,7 +7,10 @@
 #ifndef PACKAGER_MEDIA_FORMATS_PACKED_AUDIO_PACKED_AUDIO_SEGMENTER_H_
 #define PACKAGER_MEDIA_FORMATS_PACKED_AUDIO_PACKED_AUDIO_SEGMENTER_H_
 
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <packager/media/base/buffer_writer.h>
 #include <packager/media/base/stream_info.h>

@@ -6,13 +6,24 @@
 
 #include <packager/mpd/base/mpd_utils.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <list>
+#include <map>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include <absl/flags/flag.h>
 #include <absl/log/check.h>
 #include <absl/log/log.h>
+#include <absl/strings/ascii.h>
 #include <absl/strings/escaping.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
 #include <libxml/tree.h>
+#include <libxml/xmlstring.h>
 
 #include <packager/macros/logging.h>
 #include <packager/media/base/fourccs.h>
@@ -20,6 +31,7 @@
 #include <packager/media/base/protection_system_specific_info.h>
 #include <packager/mpd/base/adaptation_set.h>
 #include <packager/mpd/base/content_protection_element.h>
+#include <packager/mpd/base/media_info.pb.h>
 #include <packager/mpd/base/representation.h>
 #include <packager/mpd/base/xml/scoped_xml_ptr.h>
 
@@ -415,12 +427,10 @@ Element GenerateCencPsshElement(const std::string& pssh) {
 // and encode it in base64.
 Element GenerateMsprProElement(const std::string& pssh) {
   std::unique_ptr<media::PsshBoxBuilder> b =
-    media::PsshBoxBuilder::ParseFromBox(
-        reinterpret_cast<const uint8_t*>(pssh.data()),
-        pssh.size()
-    );
+      media::PsshBoxBuilder::ParseFromBox(
+          reinterpret_cast<const uint8_t*>(pssh.data()), pssh.size());
 
-  const std::vector<uint8_t> *p_pssh = &b->pssh_data();
+  const std::vector<uint8_t>* p_pssh = &b->pssh_data();
   std::string base64_encoded_mspr;
   absl::Base64Escape(
       std::string_view(reinterpret_cast<const char*>(p_pssh->data()),
@@ -497,7 +507,8 @@ void AddContentProtectionElementsHelperTemplated(
       if (!entry.pssh().empty()) {
         drm_content_protection.subelements.push_back(
             GenerateCencPsshElement(entry.pssh()));
-        if(entry.uuid() == kPlayReadyUUID && protected_content.include_mspr_pro()) {
+        if (entry.uuid() == kPlayReadyUUID &&
+            protected_content.include_mspr_pro()) {
           drm_content_protection.subelements.push_back(
               GenerateMsprProElement(entry.pssh()));
           drm_content_protection.value = kContentProtectionValueMSPR20;

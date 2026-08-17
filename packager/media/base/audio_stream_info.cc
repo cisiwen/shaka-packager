@@ -7,13 +7,18 @@
 #include <packager/media/base/audio_stream_info.h>
 
 #include <cinttypes>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
 
 #include <absl/log/log.h>
 #include <absl/strings/str_format.h>
 
-#include <packager/macros/compiler.h>
 #include <packager/macros/logging.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/limits.h>
+#include <packager/media/base/stream_info.h>
 
 namespace shaka {
 namespace media {
@@ -45,6 +50,8 @@ std::string AudioCodecToString(Codec codec) {
       return "AC4";
     case kCodecFlac:
       return "FLAC";
+    case kCodecIAMF:
+      return "IAMF";
     case kCodecOpus:
       return "Opus";
     case kCodecVorbis:
@@ -168,6 +175,39 @@ std::string AudioStreamInfo::GetCodecString(Codec codec,
           (audio_object_type & 0x18) >> 3, audio_object_type & 0x7);
     case kCodecFlac:
       return "flac";
+    case kCodecIAMF: {
+      // https://aomediacodec.github.io/iamf/#codecsparameter
+      // The codecs parameter string is composed as
+      //
+      // iamf.xxx.yyy.<standalone_codec_string>
+      //
+      // - xxx is the IAMF primary profile
+      // - yyy is the IAMF additional profile
+      // - <standalone_codec_string> are the elements of the codecs parameter
+      //   string if that stream was carried in its own track
+      //
+      // audio_object_type is composed of primary_profile (2 bits),
+      // additional_profile (2 bits) and (IAMF codec - kCodecAudio) (4 bits).
+      const int iamf_codec = (audio_object_type & 0xF) + kCodecAudio;
+
+      const std::string iamf_codec_string =
+          absl::StrFormat("iamf.%03d.%03d", (audio_object_type & 0xC0) >> 6,
+                          (audio_object_type & 0x30) >> 4);
+
+      switch (iamf_codec) {
+        case kCodecOpus:
+          return absl::StrFormat("%s.%s", iamf_codec_string, "Opus");
+        case kCodecAAC:
+          return absl::StrFormat("%s.%s", iamf_codec_string, "mp4a.40.2");
+        case kCodecFlac:
+          return absl::StrFormat("%s.%s", iamf_codec_string, "fLaC");
+        case kCodecPcm:
+          return absl::StrFormat("%s.%s", iamf_codec_string, "ipcm");
+        default:
+          LOG(WARNING) << "Unknown IAMF codec: " << iamf_codec;
+          return "unknown";
+      }
+    }
     case kCodecOpus:
       return "opus";
     case kCodecMP3:
@@ -180,7 +220,7 @@ std::string AudioStreamInfo::GetCodecString(Codec codec,
       //   and ISO/IEC 23008-3 clause 21 [7].
       // The value consists of the following two parts separated by a dot:
       //  - the sample entry 4CC code ('mha1', 'mha2', 'mhm1', 'mhm2')
-      //  - ‘0x’ followed by the hex value of the profile-levelid, as defined 
+      //  - ‘0x’ followed by the hex value of the profile-levelid, as defined
       //      in in ISO/IEC 23008-3 [7]
       return absl::StrFormat("%s.0x%02x",
                              FourCCToString(CodecToFourCC(codec)).c_str(),

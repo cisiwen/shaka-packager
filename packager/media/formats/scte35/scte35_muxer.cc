@@ -6,8 +6,11 @@
 
 #include <packager/media/formats/scte35/scte35_muxer.h>
 
-#include <packager/macros/status.h>
 #include <iostream>
+
+#include <absl/log/log.h>
+
+#include <packager/macros/status.h>
 
 namespace shaka {
 namespace media {

@@ -7,9 +7,13 @@
 #ifndef PACKAGER_PUBLIC_HLS_PARAMS_H_
 #define PACKAGER_PUBLIC_HLS_PARAMS_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
+
+#include <packager/cea_caption.h>
 
 namespace shaka {
 
@@ -25,6 +29,8 @@ enum class HlsPlaylistType {
 struct HlsParams {
   /// HLS playlist type. See HLS specification for details.
   HlsPlaylistType playlist_type = HlsPlaylistType::kVod;
+  /// Convert event stream to VOD once end of stream is detected
+  bool event_to_vod_on_end_of_stream = false;
   /// HLS master playlist output path.
   std::string master_playlist_output;
   /// The base URL for the Media Playlists and media files listed in the
@@ -74,6 +80,32 @@ struct HlsParams {
   /// playlist. A negative number indicates a negative time offset from the end
   /// of the last media segment in the playlist.
   std::optional<double> start_time_offset;
+  /// Create EXT-X-SESSION-KEY in master playlist
+  bool create_session_keys;
+  /// Add EXT-X-PROGRAM-DATE-TIME tag to the playlist. The date time is derived
+  /// from the current wall clock.
+  bool add_program_date_time = false;
+  /// If true, TARGETDURATION will be calculated locally in MediaPlaylist.
+  bool per_playlist_target_duration = false;
+  /// CEA-608 / CEA-708 captions.
+  std::vector<CeaCaption> closed_captions;
+  /// If true, rotate HLS media/master playlists to brand-new, independent,
+  /// self-contained files at every UTC wall-clock hour boundary. Segment
+  /// (.m4s) production continues uninterrupted; only .m3u8 writing rotates.
+  /// Each hourly manifest gets its own EXT-X-ENDLIST and its own
+  /// EXT-X-MEDIA-SEQUENCE / EXT-X-DISCONTINUITY-SEQUENCE starting at 0.
+  /// Requires session_index_output to be set.
+  bool rotate_manifest_hourly = false;
+  /// Output path for the top-level JSON "session index" listing every
+  /// hourly master playlist produced by rotate_manifest_hourly. Required
+  /// (and only used) when rotate_manifest_hourly is true.
+  std::string session_index_output;
+  /// TEST-ONLY. If nonzero, dilates wall-clock time so that rotation
+  /// happens roughly every N seconds instead of on real UTC hour
+  /// boundaries, so rotation can be exercised in short integration tests.
+  /// Must be 0 (off) in production. Ignored unless rotate_manifest_hourly
+  /// is true.
+  int32_t manifest_rotation_test_interval_seconds = 0;
 };
 
 }  // namespace shaka

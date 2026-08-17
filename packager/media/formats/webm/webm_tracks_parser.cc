@@ -4,13 +4,21 @@
 
 #include <packager/media/formats/webm/webm_tracks_parser.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <ios>
+#include <string>
+
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/strings/str_format.h>
 
+#include <packager/media/base/text_track_config.h>
 #include <packager/media/base/timestamp.h>
 #include <packager/media/formats/webm/webm_constants.h>
 #include <packager/media/formats/webm/webm_content_encodings.h>
+#include <packager/media/formats/webm/webm_content_encodings_client.h>
+#include <packager/media/formats/webm/webm_parser.h>
 
 namespace shaka {
 namespace media {
@@ -31,9 +39,8 @@ static TextKind CodecIdToTextKind(const std::string& codec_id) {
   return kTextNone;
 }
 
-static int64_t PrecisionCappedDefaultDuration(
-    const double timecode_scale_in_us,
-    const int64_t duration_in_ns) {
+static int64_t PrecisionCappedDefaultDuration(const double timecode_scale_in_us,
+                                              const int64_t duration_in_ns) {
   if (duration_in_ns <= 0)
     return kNoTimestamp;
 
@@ -58,13 +65,12 @@ WebMTracksParser::WebMTracksParser(bool ignore_text_tracks)
       video_default_duration_(-1),
       ignore_text_tracks_(ignore_text_tracks),
       audio_client_(),
-      video_client_() {
-}
+      video_client_() {}
 
 WebMTracksParser::~WebMTracksParser() {}
 
 int WebMTracksParser::Parse(const uint8_t* buf, int size) {
-  track_type_ =-1;
+  track_type_ = -1;
   track_num_ = -1;
   default_duration_ = -1;
   track_name_.clear();
@@ -186,8 +192,9 @@ bool WebMTracksParser::OnListEnd(int id) {
       DCHECK(!track_content_encodings_client_->content_encodings().empty());
       // If we have multiple ContentEncoding in one track. Always choose the
       // key id in the first ContentEncoding as the key id of the track.
-      encryption_key_id = track_content_encodings_client_->
-          content_encodings()[0]->encryption_key_id();
+      encryption_key_id =
+          track_content_encodings_client_->content_encodings()[0]
+              ->encryption_key_id();
     }
 
     if (track_type_ == kWebMTrackTypeAudio) {
@@ -253,8 +260,8 @@ bool WebMTracksParser::OnListEnd(int id) {
         ignored_tracks_.insert(track_num_);
       } else {
         std::string track_num = absl::StrFormat("%d", track_num_);
-        text_tracks_[track_num_] = TextTrackConfig(
-            text_track_kind, track_name_, track_language_, track_num);
+        text_tracks_[track_num_] = TextTrackConfig(text_track_kind, track_name_,
+                                                   track_language_, track_num);
       }
     } else {
       LOG(ERROR) << "Unexpected TrackType " << track_type_;

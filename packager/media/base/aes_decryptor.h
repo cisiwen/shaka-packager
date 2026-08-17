@@ -9,6 +9,8 @@
 #ifndef PACKAGER_MEDIA_BASE_AES_DECRYPTOR_H_
 #define PACKAGER_MEDIA_BASE_AES_DECRYPTOR_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include <packager/macros/classes.h>

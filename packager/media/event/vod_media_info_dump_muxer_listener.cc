@@ -6,7 +6,11 @@
 
 #include <packager/media/event/vod_media_info_dump_muxer_listener.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
@@ -15,6 +19,7 @@
 #include <packager/file.h>
 #include <packager/macros/compiler.h>
 #include <packager/macros/logging.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/base/protection_system_specific_info.h>
 #include <packager/media/base/stream_info.h>
@@ -25,7 +30,8 @@ namespace shaka {
 namespace media {
 
 VodMediaInfoDumpMuxerListener::VodMediaInfoDumpMuxerListener(
-    const std::string& output_file_path, bool use_segment_list)
+    const std::string& output_file_path,
+    bool use_segment_list)
     : output_file_name_(output_file_path),
       use_segment_list_(use_segment_list) {}
 
@@ -54,11 +60,8 @@ void VodMediaInfoDumpMuxerListener::OnMediaStart(
     ContainerType container_type) {
   DCHECK(muxer_options.segment_template.empty());
   media_info_.reset(new MediaInfo());
-  if (!internal::GenerateMediaInfo(muxer_options,
-                                   stream_info,
-                                   time_scale,
-                                   container_type,
-                                   media_info_.get())) {
+  if (!internal::GenerateMediaInfo(muxer_options, stream_info, time_scale,
+                                   container_type, media_info_.get())) {
     LOG(ERROR) << "Failed to generate MediaInfo from input.";
     return;
   }
@@ -124,7 +127,8 @@ void VodMediaInfoDumpMuxerListener::OnCueEvent(int64_t timestamp,
 }
 
 void VodMediaInfoDumpMuxerListener::OnSCTE35Event(int64_t timestamp, int64_t duration,
-                                               const std::string& cue_data) {
+                                               const std::string& cue_data,
+                                               uint32_t splice_event_id) {
   NOTIMPLEMENTED();
 }
 

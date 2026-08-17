@@ -4,7 +4,12 @@
 
 #include <packager/media/codecs/es_descriptor.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
 #include <absl/log/check.h>
+#include <absl/log/log.h>
 
 #include <packager/media/base/bit_reader.h>
 #include <packager/media/base/buffer_writer.h>
@@ -221,7 +226,7 @@ bool ESDescriptor::ReadData(BitReader* reader) {
 void ESDescriptor::WriteInternal(BufferWriter* writer) {
   WriteHeader(writer);
 
-  // According to ISO/IEC 14496-14:2018 Section 4.1.2, 
+  // According to ISO/IEC 14496-14:2018 Section 4.1.2,
   // ES_ID is set to 0 when stored
   const uint16_t kEsid = 0;
   writer->AppendInt(kEsid);

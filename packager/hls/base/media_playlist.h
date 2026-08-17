@@ -7,17 +7,20 @@
 #ifndef PACKAGER_HLS_BASE_MEDIA_PLAYLIST_H_
 #define PACKAGER_HLS_BASE_MEDIA_PLAYLIST_H_
 
+#include <cstdint>
 #include <filesystem>
 #include <list>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <absl/time/time.h>
+
 #include <packager/hls_params.h>
 #include <packager/macros/classes.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/mpd/base/bandwidth_estimator.h>
 #include <packager/mpd/base/media_info.pb.h>
-#include "packager/media/base/fourccs.h"
 
 namespace shaka {
 
@@ -35,6 +38,7 @@ class HlsEntry {
     kExtCueOut,
     kExtCueCont,
     kExtCueIn,
+    kProgramDateTime,
   };
   virtual ~HlsEntry();
 
@@ -73,10 +77,18 @@ class MediaPlaylist {
   ///        necessarily the same as @a file_name.
   /// @param group_id is the group ID for this playlist. This is the value of
   ///        GROUP-ID attribute for EXT-X-MEDIA.
+  /// @param is_rotation is true when this instance replaces a prior one as
+  ///        part of hourly manifest rotation (see HlsParams::
+  ///        rotate_manifest_hourly). When true, the initial
+  ///        EXT-X-MEDIA-SEQUENCE always starts at 0 and no leading
+  ///        EXT-X-DISCONTINUITY is inserted, regardless of
+  ///        hls_params.media_sequence_number -- that flag is only meant to
+  ///        apply to the very first playlist of a session (see #691).
   MediaPlaylist(const HlsParams& hls_params,
                 const std::string& file_name,
                 const std::string& name,
-                const std::string& group_id);
+                const std::string& group_id,
+                bool is_rotation = false);
   virtual ~MediaPlaylist();
 
   const std::string& file_name() const { return file_name_; }
@@ -86,6 +98,9 @@ class MediaPlaylist {
   const std::string& codec() const { return codec_; }
   const std::string& supplemental_codec() const { return supplemental_codec_; }
   const media::FourCC& compatible_brand() const { return compatible_brand_; }
+  const std::list<std::unique_ptr<HlsEntry>>& entries() const {
+    return entries_;
+  }
 
   /// For testing only.
   void SetStreamTypeForTesting(MediaPlaylistStreamType stream_type);
@@ -102,6 +117,18 @@ class MediaPlaylist {
   /// For testing only.
   void SetCharacteristicsForTesting(
       const std::vector<std::string>& characteristics);
+
+  /// For testing only. Sets the stream index so that GetMediaInfo().has_index()
+  /// and GetMediaInfo().index() return the expected values.
+  void SetIndexForTesting(uint32_t index);
+
+  /// For testing only.
+  void AddEncryptionInfoForTesting(MediaPlaylist::EncryptionMethod method,
+                                   const std::string& url,
+                                   const std::string& key_id,
+                                   const std::string& iv,
+                                   const std::string& key_format,
+                                   const std::string& key_format_versions);
 
   /// This must succeed before calling any other public methods.
   /// @param media_info is the info of the segments that are going to be added
@@ -128,6 +155,10 @@ class MediaPlaylist {
                           int64_t duration,
                           uint64_t start_byte_offset,
                           uint64_t size);
+
+  /// Set the reference time for EXT-X-PROGRAM-DATE-TIME. This is the wall clock
+  /// time for when media timestamp is 0.
+  virtual void SetReferenceTime(const absl::Time& reference_time);
 
   /// Keyframes must be added in order. It is also called before the containing
   /// segment being called.
@@ -162,7 +193,9 @@ class MediaPlaylist {
   virtual void AddPlacementOpportunity();
   
   struct Scte35 {
-  uint8_t id;
+  // The real SCTE-35 splice_event_id, used both as the DATERANGE ID and to
+  // correlate a cue-in/return command with the cue-out it belongs to.
+  uint32_t id;
   int64_t timestamp;
   // Negative duration means Cue-in
   int64_t duration;
@@ -172,13 +205,19 @@ class MediaPlaylist {
   std::list<Scte35> scte35_events_;
   Scte35 current_Scte35_ = {0, 0, 0, "", ""};
   Scte35 previous_Scte35_ = {0, 0, 0, "", ""};
-  uint8_t last_scte_id = 0;
 
-  virtual void AddScte35Event(int64_t timestamp, int64_t duration, const std::string& cue_data);
+  virtual void AddScte35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                              uint32_t splice_event_id);
 
   virtual void AddXCueOut(Scte35 scte35);
   virtual void AddXCueCont(int64_t duration, float passed);
   virtual void AddXCueIn(Scte35 scte35);
+
+  /// @return true if there is a SCTE-35 ad break currently open (a cue-out
+  ///         with no matching cue-in yet) or a queued SCTE-35 event not yet
+  ///         applied to the playlist. Used to defer hourly manifest
+  ///         rotation so a break is never split across two hourly files.
+  virtual bool HasOpenAdBreak() const;
 
   /// Write the playlist to |file_path|.
   /// This does not close the file.
@@ -189,8 +228,19 @@ class MediaPlaylist {
   /// generate an invalid playlist.
   /// @param file_path is the output file path accepted by the File
   ///        implementation.
+  /// @param event_to_vod_on_end_of_stream whether the playlist should be
+  /// converted to a vod stream once the event/live stream has ended
+  /// @param end_stream whether the stream has ended and this is the final time
+  /// we will write to the file
+  /// @param force_endlist if true, EXT-X-ENDLIST is always appended
+  /// regardless of playlist_type -- used to close out an hourly manifest
+  /// during rotation (see HlsParams::rotate_manifest_hourly), independent
+  /// of the event_to_vod_on_end_of_stream/kEvent-only mechanism above.
   /// @return true on success, false otherwise.
-  virtual bool WriteToFile(const std::filesystem::path& file_path);
+  virtual bool WriteToFile(const std::filesystem::path& file_path,
+                           bool event_to_vod_on_end_of_stream,
+                           bool end_stream,
+                           bool force_endlist = false);
 
   /// If bitrate is specified in MediaInfo then it will use that value.
   /// Otherwise, returns the max bitrate.
@@ -283,6 +333,13 @@ class MediaPlaylist {
   void RemoveOldSegment(int64_t start_time);
 
   const HlsParams& hls_params_;
+  // True for a hourly-rotation archive instance (see HlsParams::
+  // rotate_manifest_hourly) -- including its very first hour, not just
+  // subsequent rotations. Disables SlideWindow()'s time-shift trimming
+  // regardless of hls_params_.playlist_type/time_shift_buffer_depth, since
+  // the live and archive MediaPlaylist instances for the same stream share
+  // the same hls_params_ but only the live one should ever be trimmed.
+  const bool is_rotation_;
   // Mainly for MasterPlaylist to use these values.
   const std::string file_name_;
   const std::string name_;
@@ -322,6 +379,9 @@ class MediaPlaylist {
   // Once a file is actually removed, it is removed from the list.
   std::list<std::string> segments_to_be_removed_;
 
+  // This is the wall clock time when media timestamp is 0.
+  absl::Time reference_time_;
+
   // Used by kVideoIFrameOnly playlists to track the i-frames (key frames).
   struct KeyFrameInfo {
     int64_t timestamp;
@@ -333,6 +393,43 @@ class MediaPlaylist {
 
  
   DISALLOW_COPY_AND_ASSIGN(MediaPlaylist);
+};
+
+class ProgramDateTimeEntry : public HlsEntry {
+ public:
+  explicit ProgramDateTimeEntry(const absl::Time& program_time);
+
+  std::string ToString() override;
+
+ private:
+  ProgramDateTimeEntry(const ProgramDateTimeEntry&) = delete;
+  ProgramDateTimeEntry& operator=(const ProgramDateTimeEntry&) = delete;
+
+  const absl::Time program_time_;
+};
+
+class EncryptionInfoEntry : public HlsEntry {
+ public:
+  EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
+                      const std::string& url,
+                      const std::string& key_id,
+                      const std::string& iv,
+                      const std::string& key_format,
+                      const std::string& key_format_versions);
+
+  std::string ToString() override;
+  std::string ToString(std::string);
+
+ private:
+  EncryptionInfoEntry(const EncryptionInfoEntry&) = delete;
+  EncryptionInfoEntry& operator=(const EncryptionInfoEntry&) = delete;
+
+  const MediaPlaylist::EncryptionMethod method_;
+  const std::string url_;
+  const std::string key_id_;
+  const std::string iv_;
+  const std::string key_format_;
+  const std::string key_format_versions_;
 };
 
 }  // namespace hls

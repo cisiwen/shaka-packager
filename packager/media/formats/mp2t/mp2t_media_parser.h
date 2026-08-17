@@ -6,10 +6,12 @@
 #define PACKAGER_MEDIA_FORMATS_MP2T_MP2T_MEDIA_PARSER_H_
 
 #include <bitset>
-#include <deque>
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 #include <packager/macros/classes.h>
 #include <packager/media/base/byte_queue.h>
@@ -96,6 +98,9 @@ class Mp2tMediaParser : public MediaParser {
     sbr_in_mimetype_ = sbr_in_mimetype;
   }
 
+  void update_biggest_pts(int64_t pts);
+  std::unordered_set<int> text_pids_;
+
   // List of callbacks.
   InitCB init_cb_;
   NewMediaSampleCB new_media_sample_cb_;
@@ -120,6 +125,9 @@ class Mp2tMediaParser : public MediaParser {
   // A map used to track unsupported stream types and make sure the error is
   // only logged once.
   std::bitset<2256> stream_type_logged_once_;
+
+  // PTS used to update text generation if needed
+  int64_t biggest_pts_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(Mp2tMediaParser);
 };

@@ -29,6 +29,7 @@
 #include <absl/strings/str_split.h>
 
 #include <packager/app/ad_cue_generator_flags.h>
+#include <packager/app/cpix_encryption_flags.h>
 #include <packager/app/crypto_flags.h>
 #include <packager/app/hls_flags.h>
 #include <packager/app/manifest_flags.h>
@@ -40,9 +41,11 @@
 #include <packager/app/retired_flags.h>
 #include <packager/app/stream_descriptor.h>
 #include <packager/app/widevine_encryption_flags.h>
+#include <packager/cea_caption.h>
 #include <packager/file.h>
 #include <packager/kv_pairs/kv_pairs.h>
 #include <packager/tools/license_notice.h>
+#include <packager/utils/hex_parser.h>
 #include <packager/utils/string_trim_split.h>
 
 ABSL_FLAG(bool, dump_stream_info, false, "Dump demuxed stream info.");
@@ -106,8 +109,9 @@ const char kUsage[] =
     "  - drm_label: Optional value for custom DRM label, which defines the\n"
     "    encryption key applied to the stream. Typical values include AUDIO,\n"
     "    SD, HD, UHD1, UHD2. For raw key, it should be a label defined in\n"
-    "    --keys. If not provided, the DRM label is derived from stream type\n"
-    "    (video, audio), resolution, etc.\n"
+    "    --keys. For CPIX, it should match an intendedTrackType in the\n"
+    "    document. If not provided, the DRM label is derived from stream\n"
+    "    type (video, audio), resolution, etc.\n"
     "    Note that it is case sensitive.\n"
     "  - trick_play_factor (tpf): Optional value which specifies the trick\n"
     "    play, a.k.a. trick mode, stream sampling rate among key frames.\n"
@@ -200,6 +204,10 @@ bool GetProtectionScheme(uint32_t* protection_scheme) {
   }
   if (absl::GetFlag(FLAGS_protection_scheme) == "cens") {
     *protection_scheme = EncryptionParams::kProtectionSchemeCens;
+    return true;
+  }
+  if (absl::GetFlag(FLAGS_protection_scheme) == "aes128") {
+    *protection_scheme = EncryptionParams::kProtectionSchemeAes128;
     return true;
   }
   LOG(ERROR) << "Unrecognized protection_scheme "
@@ -335,6 +343,39 @@ bool ParseProtectionSystems(const std::string& protection_systems_str,
   return true;
 }
 
+bool ParseClosedCaptions(const std::string& captions_str,
+                         std::vector<CeaCaption>* captions) {
+  std::vector<std::string> captions_list =
+      SplitAndTrimSkipEmpty(captions_str, ';');
+  for (const std::string& caption_str : captions_list) {
+    CeaCaption caption;
+    std::vector<KVPair> caption_parts =
+        SplitStringIntoKeyValuePairs(caption_str, '=', ',');
+    for (const auto& part : caption_parts) {
+      if (part.first == "channel") {
+        caption.channel = part.second;
+      } else if (part.first == "lang") {
+        caption.language = part.second;
+      } else if (part.first == "name") {
+        caption.name = part.second;
+      } else if (part.first == "default") {
+        caption.is_default = (part.second == "yes");
+      } else if (part.first == "autoselect") {
+        caption.autoselect = (part.second == "yes");
+      }
+    }
+    if (caption.channel.empty()) {
+      LOG(ERROR) << "Missing channel in CEA caption: " << caption_str;
+      return false;
+    }
+    if (caption.name.empty()) {
+      caption.name = caption.channel;
+    }
+    captions->push_back(caption);
+  }
+  return true;
+}
+
 std::optional<PackagingParams> GetPackagingParams() {
   PackagingParams packaging_params;
 
@@ -361,6 +402,8 @@ std::optional<PackagingParams> GetPackagingParams() {
       absl::GetFlag(FLAGS_fragment_sap_aligned);
   chunking_params.start_segment_number =
       absl::GetFlag(FLAGS_start_segment_number);
+  chunking_params.ts_ttx_heartbeat_shift =
+      absl::GetFlag(FLAGS_ts_ttx_heartbeat_shift);
 
   int num_key_providers = 0;
   EncryptionParams& encryption_params = packaging_params.encryption_params;
@@ -376,10 +419,15 @@ std::optional<PackagingParams> GetPackagingParams() {
     encryption_params.key_provider = KeyProvider::kRawKey;
     ++num_key_providers;
   }
+  if (absl::GetFlag(FLAGS_enable_cpix_encryption)) {
+    encryption_params.key_provider = KeyProvider::kCpix;
+    ++num_key_providers;
+  }
   if (num_key_providers > 1) {
     LOG(ERROR) << "Only one of --enable_widevine_encryption, "
                   "--enable_playready_encryption, "
-                  "--enable_raw_key_encryption can be enabled.";
+                  "--enable_raw_key_encryption, "
+                  "--enable_cpix_encryption can be enabled.";
     return std::nullopt;
   }
 
@@ -397,8 +445,15 @@ std::optional<PackagingParams> GetPackagingParams() {
 
     encryption_params.crypto_period_duration_in_seconds =
         absl::GetFlag(FLAGS_crypto_period_duration);
+    if (encryption_params.crypto_period_duration_in_seconds != 0 &&
+        encryption_params.key_provider == KeyProvider::kCpix) {
+      LOG(ERROR) << "--crypto_period_duration (key rotation) is not "
+                    "supported with --enable_cpix_encryption.";
+      return std::nullopt;
+    }
     encryption_params.vp9_subsample_encryption =
         absl::GetFlag(FLAGS_vp9_subsample_encryption);
+    encryption_params.cencv1 = absl::GetFlag(FLAGS_cencv1);
     encryption_params.stream_label_func = std::bind(
         &Packager::DefaultStreamLabelFunction,
         absl::GetFlag(FLAGS_max_sd_pixels), absl::GetFlag(FLAGS_max_hd_pixels),
@@ -431,6 +486,18 @@ std::optional<PackagingParams> GetPackagingParams() {
         return std::nullopt;
       break;
     }
+    case KeyProvider::kCpix: {
+      CpixEncryptionParams& cpix = encryption_params.cpix;
+      cpix.document_source = absl::GetFlag(FLAGS_cpix);
+      cpix.request_document_source = absl::GetFlag(FLAGS_cpix_request_file);
+      cpix.headers =
+          SplitAndTrimSkipEmpty(absl::GetFlag(FLAGS_cpix_headers), ';');
+      cpix.private_key_source = absl::GetFlag(FLAGS_cpix_private_key);
+      cpix.max_sd_pixels = absl::GetFlag(FLAGS_max_sd_pixels);
+      cpix.max_hd_pixels = absl::GetFlag(FLAGS_max_hd_pixels);
+      cpix.max_uhd1_pixels = absl::GetFlag(FLAGS_max_uhd1_pixels);
+      break;
+    }
     case KeyProvider::kNone:
       break;
   }
@@ -445,9 +512,14 @@ std::optional<PackagingParams> GetPackagingParams() {
     decryption_params.key_provider = KeyProvider::kRawKey;
     ++num_key_providers;
   }
+  if (absl::GetFlag(FLAGS_enable_cpix_decryption)) {
+    decryption_params.key_provider = KeyProvider::kCpix;
+    ++num_key_providers;
+  }
   if (num_key_providers > 1) {
     LOG(ERROR) << "Only one of --enable_widevine_decryption, "
-                  "--enable_raw_key_decryption can be enabled.";
+                  "--enable_raw_key_decryption, --enable_cpix_decryption can "
+                  "be enabled.";
     return std::nullopt;
   }
   switch (decryption_params.key_provider) {
@@ -461,6 +533,15 @@ std::optional<PackagingParams> GetPackagingParams() {
     case KeyProvider::kRawKey: {
       if (!GetRawKeyParams(&decryption_params.raw_key))
         return std::nullopt;
+      break;
+    }
+    case KeyProvider::kCpix: {
+      CpixEncryptionParams& cpix = decryption_params.cpix;
+      cpix.document_source = absl::GetFlag(FLAGS_cpix);
+      cpix.request_document_source = absl::GetFlag(FLAGS_cpix_request_file);
+      cpix.headers =
+          SplitAndTrimSkipEmpty(absl::GetFlag(FLAGS_cpix_headers), ';');
+      cpix.private_key_source = absl::GetFlag(FLAGS_cpix_private_key);
       break;
     }
     case KeyProvider::kPlayReady:
@@ -484,6 +565,8 @@ std::optional<PackagingParams> GetPackagingParams() {
 
   MpdParams& mpd_params = packaging_params.mpd_params;
   mpd_params.mpd_output = absl::GetFlag(FLAGS_mpd_output);
+  mpd_params.event_to_vod_on_end_of_stream =
+      absl::GetFlag(FLAGS_event_to_vod_on_end_of_stream);
 
   std::vector<std::string> base_urls =
       SplitAndTrimSkipEmpty(absl::GetFlag(FLAGS_base_urls), ',');
@@ -530,6 +613,8 @@ std::optional<PackagingParams> GetPackagingParams() {
                           &hls_params.playlist_type)) {
     return std::nullopt;
   }
+  hls_params.event_to_vod_on_end_of_stream =
+      absl::GetFlag(FLAGS_event_to_vod_on_end_of_stream);
   hls_params.master_playlist_output =
       absl::GetFlag(FLAGS_hls_master_playlist_output);
   hls_params.base_url = absl::GetFlag(FLAGS_hls_base_url);
@@ -546,6 +631,30 @@ std::optional<PackagingParams> GetPackagingParams() {
   hls_params.start_time_offset = absl::GetFlag(FLAGS_hls_start_time_offset);
   hls_params.pts_time_offset =
       absl::GetFlag(FLAGS_pts_time_offset);
+  hls_params.create_session_keys = absl::GetFlag(FLAGS_create_session_keys);
+  hls_params.add_program_date_time = absl::GetFlag(FLAGS_add_program_date_time);
+  hls_params.per_playlist_target_duration =
+      absl::GetFlag(FLAGS_per_playlist_target_duration);
+  hls_params.rotate_manifest_hourly =
+      absl::GetFlag(FLAGS_hls_rotate_manifest_hourly);
+  hls_params.session_index_output =
+      absl::GetFlag(FLAGS_hls_session_index_output);
+  hls_params.manifest_rotation_test_interval_seconds =
+      absl::GetFlag(FLAGS_hls_manifest_rotation_test_interval_seconds);
+  if (hls_params.rotate_manifest_hourly &&
+      hls_params.session_index_output.empty()) {
+    LOG(ERROR) << "--hls_rotate_manifest_hourly requires "
+                  "--hls_session_index_output to be set.";
+    return std::nullopt;
+  }
+
+  if (!ParseClosedCaptions(absl::GetFlag(FLAGS_closed_captions),
+                           &packaging_params.closed_captions)) {
+    LOG(ERROR) << "Failed to parse --closed_captions "
+               << absl::GetFlag(FLAGS_closed_captions);
+    return std::nullopt;
+  }
+
   TestParams& test_params = packaging_params.test_params;
   test_params.dump_stream_info = absl::GetFlag(FLAGS_dump_stream_info);
   test_params.inject_fake_clock = absl::GetFlag(FLAGS_use_fake_clock_for_muxer);
@@ -685,8 +794,8 @@ std::optional<PackagingParams>  PackagerParamsFromJSON(const char* json_string_p
   //absl::AddLogSink();
 
   if (!ValidateWidevineCryptoFlags() || !ValidateRawKeyCryptoFlags() ||
-      !ValidatePRCryptoFlags() || !ValidateCryptoFlags() ||
-      !ValidateRetiredFlags()) {
+      !ValidatePRCryptoFlags() || !ValidateCpixCryptoFlags() ||
+      !ValidateCryptoFlags() || !ValidateRetiredFlags()) {
     return std::nullopt;
   }
 
@@ -761,8 +870,8 @@ int PackagerMain(int argc, char** argv) {
   absl::InitializeLog();
 
   if (!ValidateWidevineCryptoFlags() || !ValidateRawKeyCryptoFlags() ||
-      !ValidatePRCryptoFlags() || !ValidateCryptoFlags() ||
-      !ValidateRetiredFlags()) {
+      !ValidatePRCryptoFlags() || !ValidateCpixCryptoFlags() ||
+      !ValidateCryptoFlags() || !ValidateRetiredFlags()) {
     return kArgumentValidationFailed;
   }
 

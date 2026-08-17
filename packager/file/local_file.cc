@@ -6,10 +6,17 @@
 
 #include <packager/file/local_file.h>
 
+#include <stdio.h>
+
+#include <cstdint>
+#include <string>
+#include <system_error>
+
+#include <packager/file.h>
+
 #if defined(OS_WIN)
 #include <windows.h>
 #else
-#include <sys/stat.h>
 #endif  // defined(OS_WIN)
 
 #include <cstdio>
@@ -18,7 +25,6 @@
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
 
 namespace shaka {
 
@@ -126,7 +132,10 @@ bool LocalFile::Open() {
     std::error_code ec;
     if (parent_path != "" && !std::filesystem::is_directory(parent_path, ec)) {
       if (!std::filesystem::create_directories(parent_path, ec)) {
-        return false;
+        if (ec) {  // Only fail if there's an actual error
+          return false;
+        }
+        // ec is empty means directory already exists - continue normally
       }
     }
   }

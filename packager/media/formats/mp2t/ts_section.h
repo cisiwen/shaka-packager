@@ -5,6 +5,8 @@
 #ifndef PACKAGER_MEDIA_FORMATS_MP2T_TS_SECTION_H_
 #define PACKAGER_MEDIA_FORMATS_MP2T_TS_SECTION_H_
 
+#include <cstdint>
+
 namespace shaka {
 namespace media {
 namespace mp2t {
@@ -23,10 +25,17 @@ class TsSection {
   virtual ~TsSection() {}
 
   // Parse the data bytes of the TS packet.
+  // |reference_pts| is the most recently known real media PTS from any
+  // audio/video stream in the program (90kHz units, see
+  // Mp2tMediaParser::biggest_pts_), used by sections that carry no PES
+  // timestamp of their own (e.g. a raw SCTE-35 section, as opposed to a
+  // PES-wrapped one) as a real "current stream time" reference instead of a
+  // placeholder.
   // Return true if parsing is successful.
   virtual bool Parse(bool payload_unit_start_indicator,
                      const uint8_t* buf,
-                     int size) = 0;
+                     int size,
+                     int64_t reference_pts) = 0;
 
   // Process bytes that have not been processed yet (pending buffers in the
   // pipe). Flush might thus results in frame emission, as an example.

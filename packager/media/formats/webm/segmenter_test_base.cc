@@ -6,10 +6,23 @@
 
 #include <packager/media/formats/webm/segmenter_test_base.h>
 
-#include <absl/log/check.h>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
 
+#include <absl/log/check.h>
+#include <absl/log/log.h>
+#include <gtest/gtest.h>
+
+#include <packager/file.h>
 #include <packager/file/memory_file.h>
+#include <packager/media/base/media_sample.h>
+#include <packager/media/base/muxer_options.h>
+#include <packager/media/base/stream_info.h>
+#include <packager/media/base/video_stream_info.h>
 #include <packager/media/formats/webm/webm_constants.h>
+#include <packager/media/formats/webm/webm_parser.h>
 #include <packager/version/version.h>
 
 namespace shaka {
@@ -20,8 +33,8 @@ namespace {
 const uint8_t kTestMediaSampleData[] = {0xde, 0xad, 0xbe, 0xef, 0x00};
 const uint8_t kTestMediaSampleSideData[] = {
     // First 8 bytes of side_data is the BlockAddID element in big endian.
-    0x12, 0x34, 0x56, 0x78, 0x9a, 0x00, 0x00, 0x00,
-    0x73, 0x69, 0x64, 0x65, 0x00};
+    0x12, 0x34, 0x56, 0x78, 0x9a, 0x00, 0x00,
+    0x00, 0x73, 0x69, 0x64, 0x65, 0x00};
 
 const int kTrackId = 1;
 const int64_t kDurationInSeconds = 8;
@@ -124,7 +137,7 @@ void SegmentTestBase::ClusterParser::PopulateFromCluster(
 }
 
 void SegmentTestBase::ClusterParser::PopulateFromSegment(
-        const std::string& file_name) {
+    const std::string& file_name) {
   frame_timecodes_.clear();
   std::string file_contents;
   ASSERT_TRUE(File::ReadFileToString(file_name.c_str(), &file_contents));

@@ -7,10 +7,16 @@
 #ifndef PACKAGER_MEDIA_EVENT_MOCK_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_MOCK_MUXER_LISTENER_H_
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/base/protection_system_specific_info.h>
+#include <packager/media/base/range.h>
 #include <packager/media/base/stream_info.h>
 #include <packager/media/event/muxer_listener.h>
 
@@ -53,8 +59,7 @@ class MockMuxerListener : public MuxerListener {
 
   // Windows 32 bit cannot mock MediaRanges because it has Optionals that use
   // memory alignment of 8 bytes. The compiler fails if it is mocked.
-  void OnMediaEnd(const MediaRanges& range,
-                  float duration_seconds) override;
+  void OnMediaEnd(const MediaRanges& range, float duration_seconds) override;
 
   MOCK_METHOD5(OnNewSegment,
                void(const std::string& segment_name,
@@ -70,8 +75,9 @@ class MockMuxerListener : public MuxerListener {
 
   MOCK_METHOD2(OnCueEvent,
                void(int64_t timestamp, const std::string& cue_data));
-  MOCK_METHOD3(OnSCTE35Event,
-               void(int64_t timestamp, int64_t duration, const std::string& cue_data));
+  MOCK_METHOD4(OnSCTE35Event,
+               void(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                    uint32_t splice_event_id));
 };
 
 }  // namespace media

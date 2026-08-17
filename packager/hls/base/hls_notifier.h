@@ -7,6 +7,7 @@
 #ifndef PACKAGER_HLS_BASE_HLS_NOTIFIER_H_
 #define PACKAGER_HLS_BASE_HLS_NOTIFIER_H_
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -85,7 +86,8 @@ class HlsNotifier {
   /// @param timestamp is the timestamp of the SCTE35Event.
   /// @param duration is the duration of the SCTE35Event.
   /// @return true on success, false otherwise.
-  virtual bool NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data) = 0;
+  virtual bool NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                                 uint32_t splice_event_id) = 0;
 
   /// @param stream_id is the value set by NotifyNewStream().
   /// @param key_id is the key ID for the stream.
@@ -101,6 +103,8 @@ class HlsNotifier {
       const std::vector<uint8_t>& system_id,
       const std::vector<uint8_t>& iv,
       const std::vector<uint8_t>& protection_system_specific_data) = 0;
+
+  virtual bool NotifyEndOfStream() = 0;
 
   /// Process any current buffered states/resources.
   /// @return true on success, false otherwise.

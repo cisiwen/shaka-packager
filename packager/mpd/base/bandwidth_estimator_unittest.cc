@@ -6,6 +6,8 @@
 
 #include <packager/mpd/base/bandwidth_estimator.h>
 
+#include <cstdint>
+
 #include <gtest/gtest.h>
 
 namespace shaka {
@@ -63,4 +65,4 @@ TEST(BandwidthEstimatorTest, ExcludeShortBlocksMore) {
   EXPECT_EQ(kExpectedMax, be.Max());
 }
 
-} // namespace shaka
+}  // namespace shaka

@@ -7,17 +7,10 @@
 #ifndef PACKAGER_MEDIA_FORMATS_MP2T_TS_WRITER_H_
 #define PACKAGER_MEDIA_FORMATS_MP2T_TS_WRITER_H_
 
-#include <list>
-#include <map>
 #include <memory>
-#include <optional>
-#include <vector>
 
-#include <packager/file.h>
-#include <packager/file/file_closer.h>
 #include <packager/media/base/buffer_writer.h>
 #include <packager/media/formats/mp2t/continuity_counter.h>
-#include <optional>
 
 namespace shaka {
 namespace media {
@@ -46,7 +39,8 @@ class TsWriter {
   /// @param pes_packet gets added to the writer.
   /// @param buffer to write pes packet.
   /// @return true on success, false otherwise.
-  virtual bool AddPesPacket(std::unique_ptr<PesPacket> pes_packet, BufferWriter* buffer);
+  virtual bool AddPesPacket(std::unique_ptr<PesPacket> pes_packet,
+                            BufferWriter* buffer);
 
  private:
   TsWriter(const TsWriter&) = delete;

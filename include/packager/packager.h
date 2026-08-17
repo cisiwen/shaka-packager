@@ -15,10 +15,10 @@
 
 #include <packager/ad_cue_generator_params.h>
 #include <packager/buffer_callback_params.h>
+#include <packager/cea_caption.h>
 #include <packager/chunking_params.h>
 #include <packager/crypto_params.h>
 #include <packager/export.h>
-#include <packager/file.h>
 #include <packager/hls_params.h>
 #include <packager/mp4_output_params.h>
 #include <packager/mpd_params.h>
@@ -77,6 +77,9 @@ struct PackagingParams {
   /// Buffer callback params.
   BufferCallbackParams buffer_callback_params;
 
+  /// CEA-608 / CEA-708 captions.
+  std::vector<CeaCaption> closed_captions;
+
   // Parameters for testing. Do not use in production.
   TestParams test_params;
 };
@@ -125,7 +128,6 @@ struct StreamDescriptor {
   /// formats, there are multiple "channels" in a single stream. This allows
   /// selecting only one channel.
   int32_t cc_index = -1;
-
   /// Required for audio when outputting HLS. It defines the name of the output
   /// stream, which is not necessarily the same as output. This is used as the
   /// `NAME` attribute for EXT-X-MEDIA.

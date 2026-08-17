@@ -7,15 +7,17 @@
 #ifndef MPD_BASE_SIMPLE_MPD_NOTIFIER_H_
 #define MPD_BASE_SIMPLE_MPD_NOTIFIER_H_
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <absl/synchronization/mutex.h>
 
+#include <packager/mpd/base/mpd_builder.h>
 #include <packager/mpd/base/mpd_notifier.h>
-#include <packager/mpd/base/mpd_notifier_util.h>
 
 namespace shaka {
 
@@ -57,6 +59,9 @@ class SimpleMpdNotifier : public MpdNotifier {
                               const std::vector<uint8_t>& new_pssh) override;
   bool NotifyMediaInfoUpdate(uint32_t container_id,
                              const MediaInfo& media_info) override;
+
+  bool NotifyEndOfStream() override;
+
   bool Flush() override;
   /// @}
 

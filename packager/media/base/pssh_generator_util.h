@@ -7,9 +7,7 @@
 #ifndef PACKAGER_MEDIA_BASE_PSSH_GENERATOR_UTIL_H_
 #define PACKAGER_MEDIA_BASE_PSSH_GENERATOR_UTIL_H_
 
-#include <iostream>
-#include <memory>
-#include <set>
+#include <cstdint>
 #include <vector>
 
 namespace shaka {
