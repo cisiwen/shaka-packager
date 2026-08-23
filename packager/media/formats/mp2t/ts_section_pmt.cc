@@ -4,9 +4,10 @@
 
 #include <packager/media/formats/mp2t/ts_section_pmt.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
 #include <vector>
-
-#include <absl/log/log.h>
 
 #include <packager/media/base/bit_reader.h>
 #include <packager/media/formats/mp2t/mp2t_common.h>
@@ -27,11 +28,9 @@ const int kSubtitlingDescriptor = 0x59;
 }  // namespace
 
 TsSectionPmt::TsSectionPmt(const RegisterPesCb& register_pes_cb)
-    : register_pes_cb_(register_pes_cb) {
-}
+    : register_pes_cb_(register_pes_cb) {}
 
-TsSectionPmt::~TsSectionPmt() {
-}
+TsSectionPmt::~TsSectionPmt() {}
 
 bool TsSectionPmt::ParsePsiSection(BitReader* bit_reader) {
   // Read up to |last_section_number|.
@@ -187,8 +186,7 @@ bool TsSectionPmt::ParsePsiSection(BitReader* bit_reader) {
   return true;
 }
 
-void TsSectionPmt::ResetPsiSection() {
-}
+void TsSectionPmt::ResetPsiSection() {}
 
 }  // namespace mp2t
 }  // namespace media

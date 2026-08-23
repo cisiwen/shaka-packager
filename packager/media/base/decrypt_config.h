@@ -5,8 +5,8 @@
 #ifndef PACKAGER_MEDIA_BASE_DECRYPT_CONFIG_H_
 #define PACKAGER_MEDIA_BASE_DECRYPT_CONFIG_H_
 
+#include <cstddef>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 #include <packager/macros/classes.h>
@@ -25,10 +25,9 @@ namespace media {
 /// result, and then copying each byte from the decrypted block over the
 /// corresponding encrypted byte.
 struct SubsampleEntry {
-  SubsampleEntry()
-    : clear_bytes(0), cipher_bytes(0) {}
+  SubsampleEntry() : clear_bytes(0), cipher_bytes(0) {}
   SubsampleEntry(uint16_t clear_bytes, uint32_t cipher_bytes)
-    : clear_bytes(clear_bytes), cipher_bytes(cipher_bytes) {}
+      : clear_bytes(clear_bytes), cipher_bytes(cipher_bytes) {}
 
   uint16_t clear_bytes;
   uint32_t cipher_bytes;

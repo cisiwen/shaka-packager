@@ -7,19 +7,26 @@
 #include <packager/media/base/playready_key_source.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/strings/escaping.h>
 
+#include <packager/crypto_params.h>
 #include <packager/macros/compiler.h>
-#include <packager/macros/logging.h>
 #include <packager/macros/status.h>
-#include <packager/media/base/buffer_writer.h>
 #include <packager/media/base/http_key_fetcher.h>
 #include <packager/media/base/key_source.h>
 #include <packager/media/base/protection_system_ids.h>
+#include <packager/media/base/protection_system_specific_info.h>
+#include <packager/status.h>
 #include <packager/utils/hex_parser.h>
 
 namespace shaka {
@@ -64,7 +71,7 @@ bool Base64StringToBytes(const std::string& base64_string,
   bytes->assign(str.begin(), str.end());
   return true;
 }
-}
+}  // namespace
 
 PlayReadyKeySource::PlayReadyKeySource(const std::string& server_url,
                                        ProtectionSystem protection_systems)
@@ -86,14 +93,12 @@ Status RetrieveTextInXMLElement(const std::string& element,
   std::string end_tag = "</" + element + ">";
   std::size_t start_pos = xml.find(start_tag);
   if (start_pos == std::string::npos) {
-    return Status(error::SERVER_ERROR,
-                  "Unable to find tag: " + start_tag);
+    return Status(error::SERVER_ERROR, "Unable to find tag: " + start_tag);
   }
   start_pos += start_tag.size();
   std::size_t end_pos = xml.find(end_tag);
   if (end_pos == std::string::npos) {
-    return Status(error::SERVER_ERROR,
-                  "Unable to find tag: " + end_tag);
+    return Status(error::SERVER_ERROR, "Unable to find tag: " + end_tag);
   }
   if (start_pos > end_pos) {
     return Status(error::SERVER_ERROR, "Invalid positions");
@@ -113,8 +118,8 @@ Status SetKeyInformationFromServerResponse(
   // key_id/keys.
   std::string key_id_hex;
   RETURN_IF_ERROR(RetrieveTextInXMLElement("KeyId", response, &key_id_hex));
-  key_id_hex.erase(
-      std::remove(key_id_hex.begin(), key_id_hex.end(), '-'), key_id_hex.end());
+  key_id_hex.erase(std::remove(key_id_hex.begin(), key_id_hex.end(), '-'),
+                   key_id_hex.end());
 
   std::string key_id_raw;
   if (!ValidHexStringToBytes(key_id_hex, &key_id_raw)) {

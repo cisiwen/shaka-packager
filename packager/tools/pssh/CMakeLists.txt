@@ -12,8 +12,17 @@ set(PSSH_BOX_OUTPUTS
     ${CMAKE_BINARY_DIR}/packager/pssh-box-protos/widevine_common_encryption_pb2.py
     ${CMAKE_BINARY_DIR}/packager/pssh-box-protos/widevine_pssh_data_pb2.py)
 
+if(NOT USE_SYSTEM_DEPENDENCIES)
+  set(PROTO_COPY_EXTRAS
+      COMMAND
+          ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_BINARY_DIR}/packager/third_party/protobuf/py/google
+          ${CMAKE_BINARY_DIR}/packager/pssh-box-protos/google)
+endif()
+
 add_custom_command(
     DEPENDS
+        protobuf_py
         widevine_protos
         pssh-box.py
     OUTPUT ${PSSH_BOX_OUTPUTS}
@@ -28,9 +37,29 @@ add_custom_command(
     COMMAND
         ${CMAKE_COMMAND} -E copy
         ${CMAKE_CURRENT_SOURCE_DIR}/pssh-box.py
-        ${CMAKE_BINARY_DIR}/packager/)
+        ${CMAKE_BINARY_DIR}/packager
+    ${PROTO_COPY_EXTRAS})
 
 add_custom_target(pssh_box_py ALL DEPENDS ${PSSH_BOX_OUTPUTS})
+
+# Copy the test script next to the built pssh-box.py so it resolves
+# pssh-box-protos/ via its own directory.
+set(PSSH_BOX_TEST_PY ${CMAKE_BINARY_DIR}/packager/pssh_box_test.py)
+add_custom_command(
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pssh_box_test.py
+    OUTPUT ${PSSH_BOX_TEST_PY}
+    COMMAND
+        ${CMAKE_COMMAND} -E copy
+        ${CMAKE_CURRENT_SOURCE_DIR}/pssh_box_test.py
+        ${PSSH_BOX_TEST_PY})
+add_custom_target(pssh_box_test_py_copy ALL
+    DEPENDS ${PSSH_BOX_TEST_PY} pssh_box_py)
+
+if(NOT SKIP_INTEGRATION_TESTS)
+  add_test(NAME pssh_box_py_test
+      COMMAND "${Python3_EXECUTABLE}" ${PSSH_BOX_TEST_PY}
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/packager)
+endif()
 
 # Always install the python tools.
 install(PROGRAMS ${CMAKE_BINARY_DIR}/packager/pssh-box.py

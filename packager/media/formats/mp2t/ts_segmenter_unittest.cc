@@ -6,25 +6,35 @@
 
 #include <packager/media/formats/mp2t/ts_segmenter.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <memory>
+#include <utility>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include <packager/media/base/audio_stream_info.h>
+#include <packager/media/base/media_sample.h>
+#include <packager/media/base/muxer_options.h>
+#include <packager/media/base/stream_info.h>
 #include <packager/media/base/video_stream_info.h>
 #include <packager/media/event/mock_muxer_listener.h>
 #include <packager/media/formats/mp2t/pes_packet.h>
+#include <packager/media/formats/mp2t/pes_packet_generator.h>
 #include <packager/media/formats/mp2t/program_map_table_writer.h>
+#include <packager/media/formats/mp2t/ts_writer.h>
 #include <packager/status/status_test_util.h>
 
 namespace shaka {
 namespace media {
 namespace mp2t {
 
+using ::testing::_;
 using ::testing::InSequence;
 using ::testing::Return;
 using ::testing::Sequence;
 using ::testing::StrEq;
-using ::testing::_;
 
 namespace {
 
@@ -53,7 +63,9 @@ const uint8_t kNaluLengthSize = 1;
 const bool kIsEncrypted = false;
 
 const uint8_t kAnyData[] = {
-    0x01, 0x0F, 0x3C,
+    0x01,
+    0x0F,
+    0x3C,
 };
 
 class MockPesPacketGenerator : public PesPacketGenerator {
@@ -89,10 +101,10 @@ class MockTsWriter : public TsWriter {
   MOCK_METHOD0(FinalizeSegment, bool());
 
   // Similar to the hack above but takes a std::unique_ptr.
-  MOCK_METHOD2(AddPesPacketMock, bool(PesPacket* pes_packet,
-			  BufferWriter* buffer_writer));
+  MOCK_METHOD2(AddPesPacketMock,
+               bool(PesPacket* pes_packet, BufferWriter* buffer_writer));
   bool AddPesPacket(std::unique_ptr<PesPacket> pes_packet,
-		  BufferWriter* buffer_writer) override {
+                    BufferWriter* buffer_writer) override {
     buffer_writer->AppendArray(kAnyData, std::size(kAnyData));
     // No need to keep the pes packet around for the current tests.
     return AddPesPacketMock(pes_packet.get(), buffer_writer);
@@ -165,8 +177,7 @@ TEST_F(TsSegmenterTest, AddSample) {
       .InSequence(ready_pes_sequence)
       .WillOnce(Return(0u));
 
-  EXPECT_CALL(*mock_ts_writer_, AddPesPacketMock(_, _))
-      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_ts_writer_, AddPesPacketMock(_, _)).WillOnce(Return(true));
 
   // The pointer is released inside the segmenter.
   EXPECT_CALL(*mock_pes_packet_generator_, GetNextPesPacketMock())
@@ -240,8 +251,7 @@ TEST_F(TsSegmenterTest, PassedSegmentDuration) {
       .InSequence(ready_pes_sequence)
       .WillOnce(Return(0u));
 
-  EXPECT_CALL(*mock_pes_packet_generator_, Flush())
-      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_pes_packet_generator_, Flush()).WillOnce(Return(true));
 
   EXPECT_CALL(*mock_ts_writer_, AddPesPacketMock(_, _))
       .Times(2)
@@ -336,7 +346,7 @@ TEST_F(TsSegmenterTest, EncryptedSample) {
   TsSegmenter segmenter(options, &mock_listener);
 
   ON_CALL(*mock_ts_writer_, NewSegment(_)).WillByDefault(Return(true));
-  ON_CALL(*mock_ts_writer_, AddPesPacketMock(_,_)).WillByDefault(Return(true));
+  ON_CALL(*mock_ts_writer_, AddPesPacketMock(_, _)).WillByDefault(Return(true));
   ON_CALL(*mock_pes_packet_generator_, Initialize(_))
       .WillByDefault(Return(true));
   ON_CALL(*mock_pes_packet_generator_, Flush()).WillByDefault(Return(true));

@@ -6,11 +6,19 @@
 
 #include <packager/mpd/base/adaptation_set.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
-#include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
 
 #include <packager/macros/classes.h>
@@ -242,7 +250,6 @@ std::set<std::string> GetUUIDs(
 
 bool AdaptationSet::SwitchableAdaptationSet(
     const AdaptationSet& adaptation_set) {
-
   // adaptation sets are switchable if both are not protected
   if (!protected_content_ && !adaptation_set.protected_content()) {
     return true;

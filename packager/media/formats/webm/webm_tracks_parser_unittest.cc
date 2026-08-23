@@ -4,19 +4,28 @@
 
 #include <packager/media/formats/webm/webm_tracks_parser.h>
 
-#include <absl/log/log.h>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <packager/media/base/audio_stream_info.h>
+#include <packager/media/base/text_track_config.h>
 #include <packager/media/base/timestamp.h>
+#include <packager/media/base/video_stream_info.h>
 #include <packager/media/formats/webm/tracks_builder.h>
 #include <packager/media/formats/webm/webm_constants.h>
 
+using ::testing::_;
 using ::testing::HasSubstr;
 using ::testing::InSequence;
 using ::testing::Return;
 using ::testing::StrictMock;
-using ::testing::_;
 
 namespace shaka {
 namespace media {

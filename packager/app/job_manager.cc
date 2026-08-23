@@ -6,12 +6,19 @@
 
 #include <packager/app/job_manager.h>
 
+#include <functional>
+#include <memory>
 #include <set>
+#include <string>
+#include <thread>
+#include <utility>
 
 #include <absl/log/check.h>
+#include <absl/synchronization/mutex.h>
 
 #include <packager/media/chunking/sync_point_queue.h>
 #include <packager/media/origin/origin_handler.h>
+#include <packager/status.h>
 
 namespace shaka {
 namespace media {
@@ -86,7 +93,7 @@ Status JobManager::RunJobs() {
   // Wait for all jobs to complete or any job to error.
   Status status;
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     while (status.ok() && active_jobs.size()) {
       // any_job_complete_ is protected by mutex_.
       any_job_complete_.Wait(&mutex_);
@@ -119,7 +126,7 @@ Status JobManager::RunJobs() {
 }
 
 void JobManager::OnJobComplete(Job* job) {
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   // These are both protected by mutex_.
   complete_[job] = true;
   any_job_complete_.Signal();

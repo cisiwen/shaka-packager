@@ -6,16 +6,27 @@
 
 #include <packager/media/base/widevine_key_source.h>
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iterator>
+#include <memory>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 #include <absl/base/internal/endian.h>
 #include <absl/flags/flag.h>
 #include <absl/log/check.h>
-#include <absl/strings/escaping.h>
+#include <absl/log/log.h>
+#include <absl/synchronization/mutex.h>
 
-#include <packager/macros/logging.h>
+#include <packager/crypto_params.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/http_key_fetcher.h>
+#include <packager/media/base/key_source.h>
 #include <packager/media/base/producer_consumer_queue.h>
 #include <packager/media/base/protection_system_ids.h>
 #include <packager/media/base/protection_system_specific_info.h>
@@ -24,6 +35,7 @@
 #include <packager/media/base/rcheck.h>
 #include <packager/media/base/request_signer.h>
 #include <packager/media/base/widevine_common_encryption.pb.h>
+#include <packager/status.h>
 
 ABSL_FLAG(std::string,
           video_feature,
@@ -45,7 +57,7 @@ const int kFirstRetryDelayMilliseconds = 1000;
 // key rotation enabled request.
 const int kDefaultCryptoPeriodCount = 10;
 const int kGetKeyTimeoutInSeconds = 5 * 60;  // 5 minutes.
-const int kKeyFetchTimeoutInSeconds = 60;  // 1 minute.
+const int kKeyFetchTimeoutInSeconds = 60;    // 1 minute.
 
 CommonEncryptionRequest::ProtectionScheme ToCommonEncryptionProtectionScheme(
     FourCC protection_scheme) {
@@ -115,7 +127,7 @@ WidevineKeySource::~WidevineKeySource() {
 
 Status WidevineKeySource::FetchKeys(const std::vector<uint8_t>& content_id,
                                     const std::string& policy) {
-  absl::MutexLock scoped_lock(&mutex_);
+  absl::MutexLock scoped_lock(mutex_);
   common_encryption_request_.reset(new CommonEncryptionRequest);
   common_encryption_request_->set_content_id(content_id.data(),
                                              content_id.size());
@@ -179,7 +191,7 @@ Status WidevineKeySource::FetchKeys(EmeInitDataType init_data_type,
   }
   const bool widevine_classic =
       init_data_type == EmeInitDataType::WIDEVINE_CLASSIC;
-  absl::MutexLock scoped_lock(&mutex_);
+  absl::MutexLock scoped_lock(mutex_);
   common_encryption_request_.reset(new CommonEncryptionRequest);
   if (widevine_classic) {
     common_encryption_request_->set_asset_id(asset_id);
@@ -210,8 +222,7 @@ Status WidevineKeySource::GetKey(const std::vector<uint8_t>& key_id,
       return Status::OK;
     }
   }
-  return Status(error::INTERNAL_ERROR,
-                "Cannot find key with specified key ID");
+  return Status(error::INTERNAL_ERROR, "Cannot find key with specified key ID");
 }
 
 Status WidevineKeySource::GetCryptoPeriodKey(
@@ -221,7 +232,7 @@ Status WidevineKeySource::GetCryptoPeriodKey(
     EncryptionKey* key) {
   // TODO(kqyang): This is not elegant. Consider refactoring later.
   {
-    absl::MutexLock scoped_lock(&mutex_);
+    absl::MutexLock scoped_lock(mutex_);
     if (!key_production_started_) {
       crypto_period_duration_in_seconds_ = crypto_period_duration_in_seconds;
       // Another client may have a slightly smaller starting crypto period
@@ -234,8 +245,8 @@ Status WidevineKeySource::GetCryptoPeriodKey(
           new EncryptionKeyQueue(queue_size, first_crypto_period_index_));
       start_key_production_.Notify();
       key_production_started_ = true;
-    }  else if (crypto_period_duration_in_seconds_ !=
-                crypto_period_duration_in_seconds) {
+    } else if (crypto_period_duration_in_seconds_ !=
+               crypto_period_duration_in_seconds) {
       return Status(error::INVALID_ARGUMENT,
                     "Crypto period duration should not change.");
     }
@@ -283,13 +294,11 @@ void WidevineKeySource::FetchKeysTask() {
   if (!key_pool_ || key_pool_->Stopped())
     return;
 
-  Status status = FetchKeysInternal(kEnableKeyRotation,
-                                    first_crypto_period_index_,
-                                    false);
+  Status status =
+      FetchKeysInternal(kEnableKeyRotation, first_crypto_period_index_, false);
   while (status.ok()) {
     first_crypto_period_index_ += crypto_period_count_;
-    status = FetchKeysInternal(kEnableKeyRotation,
-                               first_crypto_period_index_,
+    status = FetchKeysInternal(kEnableKeyRotation, first_crypto_period_index_,
                                false);
   }
   common_encryption_request_status_ = status;
@@ -393,11 +402,10 @@ Status WidevineKeySource::GenerateKeyMessage(
   return Status::OK;
 }
 
-bool WidevineKeySource::ExtractEncryptionKey(
-    bool enable_key_rotation,
-    bool widevine_classic,
-    const std::string& response,
-    bool* transient_error) {
+bool WidevineKeySource::ExtractEncryptionKey(bool enable_key_rotation,
+                                             bool widevine_classic,
+                                             const std::string& response,
+                                             bool* transient_error) {
   DCHECK(transient_error);
   *transient_error = false;
 
@@ -491,8 +499,7 @@ bool WidevineKeySource::ExtractEncryptionKey(
   return PushToKeyPool(&encryption_key_map);
 }
 
-bool WidevineKeySource::PushToKeyPool(
-    EncryptionKeyMap* encryption_key_map) {
+bool WidevineKeySource::PushToKeyPool(EncryptionKeyMap* encryption_key_map) {
   DCHECK(key_pool_);
   DCHECK(encryption_key_map);
   auto encryption_key_map_shared = std::make_shared<EncryptionKeyMap>();

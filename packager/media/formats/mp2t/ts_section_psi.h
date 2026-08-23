@@ -5,6 +5,8 @@
 #ifndef PACKAGER_MEDIA_FORMATS_MP2T_TS_SECTION_PSI_H_
 #define PACKAGER_MEDIA_FORMATS_MP2T_TS_SECTION_PSI_H_
 
+#include <cstdint>
+
 #include <packager/macros/classes.h>
 #include <packager/media/base/byte_queue.h>
 #include <packager/media/formats/mp2t/ts_section.h>
@@ -24,7 +26,8 @@ class TsSectionPsi : public TsSection {
   // TsSection implementation.
   bool Parse(bool payload_unit_start_indicator,
              const uint8_t* buf,
-             int size) override;
+             int size,
+             int64_t reference_pts) override;
   bool Flush() override;
   void Reset() override;
 
@@ -54,4 +57,3 @@ class TsSectionPsi : public TsSection {
 }  // namespace shaka
 
 #endif
-

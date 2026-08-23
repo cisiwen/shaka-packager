@@ -14,6 +14,7 @@
 .repo
 .settings
 build/
+dist/
 junit-reports/
 packager/docs/
 .vscode/

@@ -7,13 +7,14 @@
 #ifndef PACKAGER_MEDIA_BASE_MEDIA_SAMPLE_H_
 #define PACKAGER_MEDIA_BASE_MEDIA_SAMPLE_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <string>
-#include <vector>
+#include <utility>
 
 #include <absl/log/check.h>
-#include <absl/log/log.h>
 
 #include <packager/macros/classes.h>
 #include <packager/media/base/decrypt_config.h>
@@ -133,13 +134,9 @@ class MediaSample {
 
   const DecryptConfig* decrypt_config() const { return decrypt_config_.get(); }
 
-  void set_is_key_frame(bool value) {
-    is_key_frame_ = value;
-  }
+  void set_is_key_frame(bool value) { is_key_frame_ = value; }
 
-  void set_is_encrypted(bool value) {
-    is_encrypted_ = value;
-  }
+  void set_is_encrypted(bool value) { is_encrypted_ = value; }
 
   void set_decrypt_config(std::unique_ptr<DecryptConfig> decrypt_config) {
     decrypt_config_ = std::move(decrypt_config);
@@ -149,9 +146,7 @@ class MediaSample {
   bool end_of_stream() const { return data_size_ == 0; }
 
   const std::string& config_id() const { return config_id_; }
-  void set_config_id(const std::string& config_id) {
-    config_id_ = config_id;
-  }
+  void set_config_id(const std::string& config_id) { config_id_ = config_id; }
 
  protected:
   // Made it protected to disallow the constructor to be called directly.

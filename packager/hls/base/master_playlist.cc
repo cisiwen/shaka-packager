@@ -9,17 +9,24 @@
 #include <algorithm>  // std::max
 #include <cstdint>
 #include <filesystem>
+#include <list>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
-#include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
 #include <absl/strings/str_join.h>
 
+#include <packager/cea_caption.h>
 #include <packager/file.h>
 #include <packager/hls/base/media_playlist.h>
 #include <packager/hls/base/tag.h>
+#include <packager/kv_pairs/kv_pairs.h>
 #include <packager/macros/logging.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/version/version.h>
 
 namespace shaka {
@@ -44,6 +51,7 @@ struct Variant {
   std::set<std::string> text_codecs;
   const std::string* audio_group_id = nullptr;
   const std::string* text_group_id = nullptr;
+  bool have_instream_closed_caption = false;
   // The bitrates should be the sum of audio bitrate and text bitrate.
   // However, given the constraints and assumptions, it makes sense to exclude
   // text bitrate out of the calculation:
@@ -53,6 +61,16 @@ struct Variant {
   //   sense to take that text bitrate into account here.
   uint64_t max_audio_bitrate = 0;
   uint64_t avg_audio_bitrate = 0;
+};
+
+// Pairs a media playlist with the EXT-X-MEDIA tag attributes computed for it.
+// Resolving the attributes (group id, default/autoselect) up front lets us
+// emit tags in input order without re-grouping by GROUP-ID first.
+struct MediaTags {
+  const MediaPlaylist* playlist;
+  std::string group_id;
+  bool is_default;
+  bool is_autoselect;
 };
 
 uint64_t GetMaximumMaxBitrate(const std::list<const MediaPlaylist*> playlists) {
@@ -165,7 +183,8 @@ std::list<Variant> SubtitleGroupsToVariants(
 std::list<Variant> BuildVariants(
     const std::map<std::string, std::list<const MediaPlaylist*>>& audio_groups,
     const std::map<std::string, std::list<const MediaPlaylist*>>&
-        subtitle_groups) {
+        subtitle_groups,
+    const bool have_instream_closed_caption) {
   std::list<Variant> audio_variants = AudioGroupsToVariants(audio_groups);
   std::list<Variant> subtitle_variants =
       SubtitleGroupsToVariants(subtitle_groups);
@@ -177,15 +196,15 @@ std::list<Variant> BuildVariants(
 
   for (const auto& audio_variant : audio_variants) {
     for (const auto& subtitle_variant : subtitle_variants) {
-      Variant variant;
-      variant.audio_codecs = audio_variant.audio_codecs;
-      variant.text_codecs = subtitle_variant.text_codecs;
-      variant.audio_group_id = audio_variant.audio_group_id;
-      variant.text_group_id = subtitle_variant.text_group_id;
-      variant.max_audio_bitrate = audio_variant.max_audio_bitrate;
-      variant.avg_audio_bitrate = audio_variant.avg_audio_bitrate;
-
-      merged.push_back(variant);
+      Variant base_variant;
+      base_variant.audio_codecs = audio_variant.audio_codecs;
+      base_variant.text_codecs = subtitle_variant.text_codecs;
+      base_variant.audio_group_id = audio_variant.audio_group_id;
+      base_variant.text_group_id = subtitle_variant.text_group_id;
+      base_variant.max_audio_bitrate = audio_variant.max_audio_bitrate;
+      base_variant.avg_audio_bitrate = audio_variant.avg_audio_bitrate;
+      base_variant.have_instream_closed_caption = have_instream_closed_caption;
+      merged.push_back(base_variant);
     }
   }
 
@@ -239,14 +258,16 @@ void BuildStreamInfTag(const MediaPlaylist& playlist,
 
   uint32_t width;
   uint32_t height;
+
+  const bool is_iframe_playlist =
+      playlist.stream_type() ==
+      MediaPlaylist::MediaPlaylistStreamType::kVideoIFramesOnly;
+
   if (playlist.GetDisplayResolution(&width, &height)) {
     tag.AddNumberPair("RESOLUTION", width, 'x', height);
 
     // Right now the frame-rate returned may not be accurate in some scenarios.
     // TODO(kqyang): Fix frame-rate computation.
-    const bool is_iframe_playlist =
-        playlist.stream_type() ==
-        MediaPlaylist::MediaPlaylistStreamType::kVideoIFramesOnly;
     if (!is_iframe_playlist) {
       const double frame_rate = playlist.GetFrameRate();
       if (frame_rate > 0)
@@ -258,23 +279,23 @@ void BuildStreamInfTag(const MediaPlaylist& playlist,
       tag.AddString("VIDEO-RANGE", video_range);
   }
 
-  if (variant.audio_group_id) {
-    tag.AddQuotedString("AUDIO", *variant.audio_group_id);
+  if (!is_iframe_playlist) {
+    if (variant.audio_group_id) {
+      tag.AddQuotedString("AUDIO", *variant.audio_group_id);
+    }
+
+    if (variant.text_group_id) {
+      tag.AddQuotedString("SUBTITLES", *variant.text_group_id);
+    }
+
+    if (variant.have_instream_closed_caption) {
+      tag.AddQuotedString("CLOSED-CAPTIONS", "CC");
+    } else {
+      tag.AddString("CLOSED-CAPTIONS", "NONE");
+    }
   }
 
-  if (variant.text_group_id) {
-    tag.AddQuotedString("SUBTITLES", *variant.text_group_id);
-  }
-
-  // Since CEA captions in Shaka Packager are only an input format, but not
-  // supported as output, the HLS output should always indicate that there are
-  // no captions.  Explicitly signaling a lack of captions in HLS keeps Safari
-  // from assuming captions and showing a text track that doesn't exist.
-  // https://github.com/shaka-project/shaka-packager/issues/922#issuecomment-804304019
-  tag.AddString("CLOSED-CAPTIONS", "NONE");
-
-  if (playlist.stream_type() ==
-      MediaPlaylist::MediaPlaylistStreamType::kVideoIFramesOnly) {
+  if (is_iframe_playlist) {
     tag.AddQuotedString("URI", base_url + playlist.file_name());
     out->append("\n");
   } else {
@@ -350,14 +371,14 @@ void BuildMediaTag(const MediaPlaylist& playlist,
       // to handle Dolby Digital Plus JOC content.
       // https://developer.apple.com/documentation/http_live_streaming/hls_authoring_specification_for_apple_devices/hls_authoring_specification_for_apple_devices_appendices
       std::string channel_string =
-        std::to_string(playlist.GetEC3JocComplexity()) + "/JOC";
+          std::to_string(playlist.GetEC3JocComplexity()) + "/JOC";
       tag.AddQuotedString("CHANNELS", channel_string);
     } else if (playlist.GetAC4ImsFlag() || playlist.GetAC4CbiFlag()) {
       // Dolby has qualified using IMSA to present AC4 immersive audio (IMS and
       // CBI without object-based audio) for Dolby internal use only. IMSA is
       // not included in any publicly-available specifications as of June, 2020.
       std::string channel_string =
-        std::to_string(playlist.GetNumChannels()) + "/IMSA";
+          std::to_string(playlist.GetNumChannels()) + "/IMSA";
       tag.AddQuotedString("CHANNELS", channel_string);
     } else {
       // According to HLS spec:
@@ -373,91 +394,67 @@ void BuildMediaTag(const MediaPlaylist& playlist,
   out->append("\n");
 }
 
-void BuildMediaTags(
-    std::list<std::pair<std::string, std::list<const MediaPlaylist*>>>& groups,
-    const std::string& default_language,
-    const std::string& base_url,
-    std::string* out) {
-  for (const auto& group : groups) {
-    const std::string& group_id = group.first;
-    const auto& playlists = group.second;
-
-    // Tracks the language of the playlist in this group.
-    // According to HLS spec: https://goo.gl/MiqjNd 4.3.4.1.1. Rendition Groups
-    // - A Group MUST NOT have more than one member with a DEFAULT attribute of
-    //   YES.
-    // - Each EXT-X-MEDIA tag with an AUTOSELECT=YES attribute SHOULD have a
-    //   combination of LANGUAGE[RFC5646], ASSOC-LANGUAGE, FORCED, and
-    //   CHARACTERISTICS attributes that is distinct from those of other
-    //   AUTOSELECT=YES members of its Group.
-    // We tag the first rendition encountered with a particular language with
-    // 'AUTOSELECT'; it is tagged with 'DEFAULT' too if the language matches
-    // |default_language_|.
-    std::set<std::string> languages;
-
-    for (const auto& playlist : playlists) {
-      bool is_default = false;
-      bool is_autoselect = false;
-
-      if (playlist->is_dvs()) {
-        // According to HLS Authoring Specification for Apple Devices
-        // https://developer.apple.com/documentation/http_live_streaming/hls_authoring_specification_for_apple_devices#overview
-        // section 2.13 If you provide DVS, the AUTOSELECT attribute MUST have
-        //              a value of "YES".
-        is_autoselect = true;
-      } else {
-        const std::string language = playlist->language();
-        if (languages.find(language) == languages.end()) {
-          is_default = !language.empty() && language == default_language;
-          is_autoselect = true;
-
-          languages.insert(language);
-        }
-      }
-
-      if (playlist->stream_type() ==
-              MediaPlaylist::MediaPlaylistStreamType::kSubtitle &&
-          playlist->forced_subtitle()) {
-        is_autoselect = true;
-      }
-
-      BuildMediaTag(*playlist, group_id, is_default, is_autoselect, base_url,
-                    out);
-    }
-  }
-}
-
-bool ListOrderFn(const MediaPlaylist*& a, const MediaPlaylist*& b) {
+bool PlaylistOrderFn(const MediaPlaylist*& a, const MediaPlaylist*& b) {
   return a->GetMediaInfo().index() < b->GetMediaInfo().index();
 }
 
-bool GroupOrderFn(std::pair<std::string, std::list<const MediaPlaylist*>>& a,
-                  std::pair<std::string, std::list<const MediaPlaylist*>>& b) {
-  a.second.sort(ListOrderFn);
-  b.second.sort(ListOrderFn);
-  return a.second.front()->GetMediaInfo().index() <
-         b.second.front()->GetMediaInfo().index();
+bool MediaTagsOrderByIndexFn(const MediaTags& a, const MediaTags& b) {
+  return a.playlist->GetMediaInfo().index() <
+         b.playlist->GetMediaInfo().index();
+}
+
+bool MediaTagsOrderByGroupIdFn(const MediaTags& a, const MediaTags& b) {
+  return a.group_id < b.group_id;
+}
+
+void BuildCeaMediaTag(const CeaCaption& caption, std::string* out) {
+  Tag tag("#EXT-X-MEDIA", out);
+  tag.AddString("TYPE", "CLOSED-CAPTIONS");
+  tag.AddQuotedString("GROUP-ID", "CC");
+  tag.AddQuotedString("NAME", caption.name);
+  if (!caption.language.empty()) {
+    tag.AddQuotedString("LANGUAGE", caption.language);
+  }
+  if (caption.is_default)
+    tag.AddString("DEFAULT", "YES");
+  else
+    tag.AddString("DEFAULT", "NO");
+  if (caption.autoselect)
+    tag.AddString("AUTOSELECT", "YES");
+  else
+    tag.AddString("AUTOSELECT", "NO");
+  tag.AddQuotedString("INSTREAM-ID", caption.channel);
+  out->append("\n");
 }
 
 void AppendPlaylists(const std::string& default_audio_language,
                      const std::string& default_text_language,
+                     const std::vector<CeaCaption>& closed_captions,
                      const std::string& base_url,
                      const std::list<MediaPlaylist*>& playlists,
                      std::string* content) {
-  std::map<std::string, std::list<const MediaPlaylist*>> audio_playlist_groups;
-  std::map<std::string, std::list<const MediaPlaylist*>>
-      subtitle_playlist_groups;
+  std::list<MediaTags> audio_playlists;
+  std::list<MediaTags> subtitle_playlists;
   std::list<const MediaPlaylist*> video_playlists;
   std::list<const MediaPlaylist*> iframe_playlists;
 
   bool has_index = true;
 
+  // First pass: classify playlists and capture their group ids. The
+  // is_default/is_autoselect flags are left at their default values here and
+  // assigned in a second pass below, after sorting, so that "first rendition
+  // encountered per (group, language)" always refers to the first rendition
+  // in the final output order rather than the arbitrary arrival order of the
+  // input list (which, with --force_cl_index on by default, is typically
+  // different from the output order).
   for (const MediaPlaylist* playlist : playlists) {
     has_index = has_index && playlist->GetMediaInfo().has_index();
 
     switch (playlist->stream_type()) {
       case MediaPlaylist::MediaPlaylistStreamType::kAudio:
-        audio_playlist_groups[GetGroupId(*playlist)].push_back(playlist);
+        audio_playlists.push_back({playlist, GetGroupId(*playlist),
+                                   /*is_default=*/false,
+                                   /*is_autoselect=*/false});
         break;
       case MediaPlaylist::MediaPlaylistStreamType::kVideo:
         video_playlists.push_back(playlist);
@@ -466,50 +463,115 @@ void AppendPlaylists(const std::string& default_audio_language,
         iframe_playlists.push_back(playlist);
         break;
       case MediaPlaylist::MediaPlaylistStreamType::kSubtitle:
-        subtitle_playlist_groups[GetGroupId(*playlist)].push_back(playlist);
+        subtitle_playlists.push_back({playlist, GetGroupId(*playlist),
+                                      /*is_default=*/false,
+                                      /*is_autoselect=*/false});
         break;
       default:
         NOTIMPLEMENTED() << static_cast<int>(playlist->stream_type())
                          << " not handled.";
+        break;
     }
   }
 
-  // convert the std::map to std::list and reorder it if indexes were provided
-  std::list<std::pair<std::string, std::list<const MediaPlaylist*>>>
-      audio_groups_list(audio_playlist_groups.begin(),
-                        audio_playlist_groups.end());
-  std::list<std::pair<std::string, std::list<const MediaPlaylist*>>>
-      subtitle_groups_list(subtitle_playlist_groups.begin(),
-                           subtitle_playlist_groups.end());
   if (has_index) {
-    audio_groups_list.sort(GroupOrderFn);
-    for (const auto& group : audio_groups_list) {
-      std::list<const MediaPlaylist*> group_playlists = group.second;
-      group_playlists.sort(ListOrderFn);
-    }
-    subtitle_groups_list.sort(GroupOrderFn);
-    for (const auto& group : subtitle_groups_list) {
-      std::list<const MediaPlaylist*> group_playlists = group.second;
-      group_playlists.sort(ListOrderFn);
-    }
-    video_playlists.sort(ListOrderFn);
-    iframe_playlists.sort(ListOrderFn);
+    video_playlists.sort(PlaylistOrderFn);
+    iframe_playlists.sort(PlaylistOrderFn);
+    audio_playlists.sort(MediaTagsOrderByIndexFn);
+    subtitle_playlists.sort(MediaTagsOrderByIndexFn);
+  } else {
+    // When there's no index, sort by group_id to maintain consistent ordering
+    // (matching the original behavior of using std::map which sorts by key).
+    audio_playlists.sort(MediaTagsOrderByGroupIdFn);
+    subtitle_playlists.sort(MediaTagsOrderByGroupIdFn);
   }
 
-  if (!audio_playlist_groups.empty()) {
-    content->append("\n");
-    BuildMediaTags(audio_groups_list, default_audio_language, base_url,
-                   content);
+  // Second pass: now that the audio and subtitle lists are in their final
+  // output order, assign the is_default/is_autoselect flags.
+  //
+  // According to HLS spec: https://goo.gl/MiqjNd 4.3.4.1.1. Rendition Groups
+  // - A Group MUST NOT have more than one member with a DEFAULT attribute of
+  //   YES.
+  // - Each EXT-X-MEDIA tag with an AUTOSELECT=YES attribute SHOULD have a
+  //   combination of LANGUAGE[RFC5646], ASSOC-LANGUAGE, FORCED, and
+  //   CHARACTERISTICS attributes that is distinct from those of other
+  //   AUTOSELECT=YES members of its Group.
+  // We tag the first rendition in a group with a particular language with
+  // 'AUTOSELECT'; it is tagged with 'DEFAULT' too if the language matches
+  // the default language.
+  std::map<std::string, std::set<std::string>> audio_group_languages;
+  for (auto& pl : audio_playlists) {
+    if (pl.playlist->is_dvs()) {
+      // According to HLS Authoring Specification for Apple Devices
+      // https://developer.apple.com/documentation/http_live_streaming/hls_authoring_specification_for_apple_devices#overview
+      // section 2.13 If you provide DVS, the AUTOSELECT attribute MUST have
+      //              a value of "YES".
+      pl.is_autoselect = true;
+      continue;
+    }
+    const std::string language = pl.playlist->language();
+    auto& languages = audio_group_languages[pl.group_id];
+    if (languages.find(language) == languages.end()) {
+      pl.is_default = !language.empty() && language == default_audio_language;
+      pl.is_autoselect = true;
+      languages.insert(language);
+    }
   }
 
-  if (!subtitle_playlist_groups.empty()) {
+  std::map<std::string, std::set<std::string>> subtitle_group_languages;
+  for (auto& pl : subtitle_playlists) {
+    const std::string language = pl.playlist->language();
+    auto& languages = subtitle_group_languages[pl.group_id];
+    if (languages.find(language) == languages.end()) {
+      pl.is_default = !language.empty() && language == default_text_language;
+      pl.is_autoselect = true;
+      languages.insert(language);
+    }
+    if (pl.playlist->forced_subtitle()) {
+      pl.is_autoselect = true;
+    }
+  }
+
+  if (!audio_playlists.empty()) {
     content->append("\n");
-    BuildMediaTags(subtitle_groups_list, default_text_language, base_url,
-                   content);
+    for (const auto& pl : audio_playlists) {
+      BuildMediaTag(*pl.playlist, pl.group_id, pl.is_default, pl.is_autoselect,
+                    base_url, content);
+    }
+  }
+
+  if (!subtitle_playlists.empty()) {
+    content->append("\n");
+    for (const auto& pl : subtitle_playlists) {
+      BuildMediaTag(*pl.playlist, pl.group_id, pl.is_default, pl.is_autoselect,
+                    base_url, content);
+    }
+  }
+
+  // BuildVariants() (and the audio-only fallback below) still need playlists
+  // bucketed by GROUP-ID, so rebuild those groups here from the already-emitted
+  // tag list. The tag emission above intentionally ignored grouping in order
+  // to honor input order.
+  std::map<std::string, std::list<const MediaPlaylist*>> audio_playlist_groups;
+  std::map<std::string, std::list<const MediaPlaylist*>>
+      subtitle_playlist_groups;
+  for (const auto& pl : audio_playlists) {
+    audio_playlist_groups[pl.group_id].push_back(pl.playlist);
+  }
+  for (const auto& pl : subtitle_playlists) {
+    subtitle_playlist_groups[pl.group_id].push_back(pl.playlist);
+  }
+
+  if (!closed_captions.empty()) {
+    content->append("\n");
+    for (const auto& caption : closed_captions) {
+      BuildCeaMediaTag(caption, content);
+    }
   }
 
   std::list<Variant> variants =
-      BuildVariants(audio_playlist_groups, subtitle_playlist_groups);
+      BuildVariants(audio_playlist_groups, subtitle_playlist_groups,
+                    !closed_captions.empty());
   for (const auto& variant : variants) {
     if (video_playlists.empty())
       break;
@@ -531,7 +593,7 @@ void AppendPlaylists(const std::string& default_audio_language,
   if (!audio_playlist_groups.empty() && video_playlists.empty() &&
       subtitle_playlist_groups.empty()) {
     content->append("\n");
-    for (const auto& playlist_group : audio_groups_list) {
+    for (const auto& playlist_group : audio_playlist_groups) {
       Variant variant;
       // Populate |audio_group_id|, which will be propagated to "AUDIO" field.
       // Leaving other fields, e.g. xxx_audio_bitrate in |Variant|, as
@@ -550,11 +612,15 @@ void AppendPlaylists(const std::string& default_audio_language,
 MasterPlaylist::MasterPlaylist(const std::filesystem::path& file_name,
                                const std::string& default_audio_language,
                                const std::string& default_text_language,
-                               bool is_independent_segments)
+                               const std::vector<CeaCaption>& closed_captions,
+                               bool is_independent_segments,
+                               bool create_session_keys)
     : file_name_(file_name),
       default_audio_language_(default_audio_language),
       default_text_language_(default_text_language),
-      is_independent_segments_(is_independent_segments) {}
+      closed_captions_(closed_captions),
+      is_independent_segments_(is_independent_segments),
+      create_session_keys_(create_session_keys) {}
 
 MasterPlaylist::~MasterPlaylist() {}
 
@@ -568,8 +634,27 @@ bool MasterPlaylist::WriteMasterPlaylist(
   if (is_independent_segments_) {
     content.append("\n#EXT-X-INDEPENDENT-SEGMENTS\n");
   }
-  AppendPlaylists(default_audio_language_, default_text_language_, base_url,
-                  playlists, &content);
+
+  // Iterate over the playlists and add the session keys to the master playlist.
+  if (create_session_keys_) {
+    std::set<std::string> session_keys;
+    for (const auto& playlist : playlists) {
+      for (const auto& entry : playlist->entries()) {
+        if (entry->type() == HlsEntry::EntryType::kExtKey) {
+          auto encryption_entry =
+              dynamic_cast<EncryptionInfoEntry*>(entry.get());
+          session_keys.emplace(
+              encryption_entry->ToString("#EXT-X-SESSION-KEY"));
+        }
+      }
+    }
+    // session_keys will now contain all the unique session keys.
+    for (const auto& session_key : session_keys)
+      content.append(session_key + "\n");
+  }
+
+  AppendPlaylists(default_audio_language_, default_text_language_,
+                  closed_captions_, base_url, playlists, &content);
 
   // Skip if the playlist is already written.
   if (content == written_playlist_)

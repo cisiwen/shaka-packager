@@ -7,26 +7,37 @@
 #include <packager/media/demuxer/demuxer.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/strings/escaping.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
+#include <absl/strings/string_view.h>
 
 #include <packager/file.h>
 #include <packager/macros/compiler.h>
 #include <packager/macros/logging.h>
-#include <packager/media/base/decryptor_source.h>
+#include <packager/media/base/container_names.h>
 #include <packager/media/base/key_source.h>
+#include <packager/media/base/media_handler.h>
 #include <packager/media/base/media_sample.h>
 #include <packager/media/base/stream_info.h>
+#include <packager/media/base/text_sample.h>
 #include <packager/media/formats/mp2t/mp2t_media_parser.h>
 #include <packager/media/formats/mp4/mp4_media_parser.h>
 #include <packager/media/formats/webm/webm_media_parser.h>
 #include <packager/media/formats/webvtt/webvtt_parser.h>
 #include <packager/media/formats/wvm/wvm_media_parser.h>
+#include <packager/status.h>
 
 namespace {
 // 65KB, sufficient to determine the container and likely all init data.
@@ -78,7 +89,7 @@ bool GetStreamIndex(const std::string& stream_label, size_t* stream_index) {
   return true;
 }
 
-}
+}  // namespace
 
 namespace shaka {
 namespace media {
@@ -144,8 +155,7 @@ Status Demuxer::SetHandler(const std::string& stream_label,
                            std::shared_ptr<MediaHandler> handler) {
   size_t stream_index = kInvalidStreamIndex;
   if (!GetStreamIndex(stream_label, &stream_index)) {
-    return Status(error::INVALID_ARGUMENT,
-                  "Invalid stream: " + stream_label);
+    return Status(error::INVALID_ARGUMENT, "Invalid stream: " + stream_label);
   }
   return MediaHandler::SetHandler(stream_index, std::move(handler));
 }
@@ -245,7 +255,8 @@ Status Demuxer::InitializeParser() {
     // descriptor |media_file_| instead of opening the same file again.
     static_cast<mp4::MP4MediaParser*>(parser_.get())->LoadMoov(file_name_);
   }
-  if (!parser_->Parse(buffer_.get(), bytes_read) || (eof && !parser_->Flush())) {
+  if (!parser_->Parse(buffer_.get(), bytes_read) ||
+      (eof && !parser_->Flush())) {
     return Status(error::PARSER_FAILURE,
                   "Cannot parse media file " + file_name_);
   }

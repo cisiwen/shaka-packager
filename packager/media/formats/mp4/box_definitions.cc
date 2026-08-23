@@ -5,7 +5,13 @@
 #include <packager/media/formats/mp4/box_definitions.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
 #include <limits>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include <absl/flags/flag.h>
 #include <absl/log/check.h>
@@ -13,8 +19,12 @@
 
 #include <packager/macros/logging.h>
 #include <packager/media/base/bit_reader.h>
+#include <packager/media/base/buffer_writer.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/rcheck.h>
+#include <packager/media/codecs/es_descriptor.h>
 #include <packager/media/formats/mp4/box_buffer.h>
+#include <packager/media/formats/mp4/box_reader.h>
 
 ABSL_FLAG(bool,
           mvex_before_trak,
@@ -707,6 +717,9 @@ FourCC DecodingTimeToSample::BoxType() const {
 bool DecodingTimeToSample::ReadWriteInternal(BoxBuffer* buffer) {
   uint32_t count = static_cast<uint32_t>(decoding_time.size());
   RCHECK(ReadWriteHeaderInternal(buffer) && buffer->ReadWriteUInt32(&count));
+
+  if (buffer->Reading())
+    RCHECK(count <= buffer->BytesLeft() / sizeof(DecodingTime));
 
   decoding_time.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
@@ -1620,7 +1633,7 @@ bool VideoSampleEntry::ReadWriteInternal(BoxBuffer* buffer) {
 
   if (buffer->Reading()) {
     extra_codec_configs.clear();
-    // Handle Dolby Vision boxes.
+    // Handle Dolby Vision boxes and stereo/multiview related boxes.
     const bool is_hevc =
         actual_format == FOURCC_dvhe || actual_format == FOURCC_dvh1 ||
         actual_format == FOURCC_hev1 || actual_format == FOURCC_hvc1;
@@ -1631,6 +1644,13 @@ bool VideoSampleEntry::ReadWriteInternal(BoxBuffer* buffer) {
         RCHECK(buffer->TryReadWriteChild(&dv_box));
         if (!dv_box.data.empty())
           extra_codec_configs.push_back(std::move(dv_box));
+      }
+      for (FourCC fourcc : {FOURCC_lhvC, FOURCC_vexu, FOURCC_hfov}) {
+        CodecConfiguration stereo_box;
+        stereo_box.box_type = fourcc;
+        RCHECK(buffer->TryReadWriteChild(&stereo_box));
+        if (!stereo_box.data.empty())
+          extra_codec_configs.push_back(std::move(stereo_box));
       }
     }
     const bool is_av1 = actual_format == FOURCC_av01;
@@ -1725,6 +1745,24 @@ bool VideoSampleEntry::ParseExtraCodecConfigsVector(
     pos += box_reader->pos();
   }
   return true;
+}
+
+bool VideoSampleEntry::HaveDolbyVisionConfig() const {
+  for (CodecConfiguration codec_config : extra_codec_configs) {
+    if (codec_config.box_type == FOURCC_dvcC ||
+        codec_config.box_type == FOURCC_dvvC ||
+        codec_config.box_type == FOURCC_hvcE)
+      return true;
+  }
+  return false;
+}
+
+bool VideoSampleEntry::HaveLHEVCConfig() const {
+  for (CodecConfiguration codec_config : extra_codec_configs) {
+    if (codec_config.box_type == FOURCC_lhvC)
+      return true;
+  }
+  return false;
 }
 
 ElementaryStreamDescriptor::ElementaryStreamDescriptor() = default;
@@ -1958,6 +1996,27 @@ size_t OpusSpecific::ComputeSizeInternal() {
          kOpusMagicSignatureSize;
 }
 
+IAMFSpecific::IAMFSpecific() = default;
+IAMFSpecific::~IAMFSpecific() = default;
+
+FourCC IAMFSpecific::BoxType() const {
+  return FOURCC_iacb;
+}
+
+bool IAMFSpecific::ReadWriteInternal(BoxBuffer* buffer) {
+  RCHECK(ReadWriteHeaderInternal(buffer));
+  size_t size = buffer->Reading() ? buffer->BytesLeft() : data.size();
+  RCHECK(buffer->ReadWriteVector(&data, size));
+  return true;
+}
+
+size_t IAMFSpecific::ComputeSizeInternal() {
+  // This box is optional. Skip it if not initialized.
+  if (data.empty())
+    return 0;
+  return HeaderSize() + data.size();
+}
+
 FlacSpecific::FlacSpecific() = default;
 FlacSpecific::~FlacSpecific() = default;
 
@@ -2040,6 +2099,7 @@ bool AudioSampleEntry::ReadWriteInternal(BoxBuffer* buffer) {
   RCHECK(buffer->TryReadWriteChild(&dec3));
   RCHECK(buffer->TryReadWriteChild(&dac4));
   RCHECK(buffer->TryReadWriteChild(&dops));
+  RCHECK(buffer->TryReadWriteChild(&iacb));
   RCHECK(buffer->TryReadWriteChild(&dfla));
   RCHECK(buffer->TryReadWriteChild(&mhac));
   RCHECK(buffer->TryReadWriteChild(&alac));
@@ -2069,7 +2129,7 @@ size_t AudioSampleEntry::ComputeSizeInternal() {
          esds.ComputeSize() + ddts.ComputeSize() + dac3.ComputeSize() +
          dec3.ComputeSize() + dops.ComputeSize() + dfla.ComputeSize() +
          dac4.ComputeSize() + mhac.ComputeSize() + udts.ComputeSize() +
-         alac.ComputeSize() +
+         alac.ComputeSize() + iacb.ComputeSize() +
          // Reserved and predefined bytes.
          6 + 8 +  // 6 + 8 bytes reserved.
          4;       // 4 bytes predefined.

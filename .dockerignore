@@ -11,3 +11,4 @@
 .repo
 .settings
 /out*
+/build*

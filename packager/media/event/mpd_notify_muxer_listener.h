@@ -9,10 +9,13 @@
 #ifndef PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 #define PACKAGER_MEDIA_EVENT_MPD_NOTIFY_MUXER_LISTENER_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/muxer_options.h>
 #include <packager/media/event/event_info.h>
 #include <packager/media/event/muxer_listener.h>
@@ -60,7 +63,8 @@ class MpdNotifyMuxerListener : public MuxerListener {
                   uint64_t start_byte_offset,
                   uint64_t size) override;
   void OnCueEvent(int64_t timestamp, const std::string& cue_data) override;
-  void OnSCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data) override;
+  void OnSCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
+                    uint32_t splice_event_id) override;
   /// @}
 
   void set_accessibilities(const std::vector<std::string>& accessiblities) {

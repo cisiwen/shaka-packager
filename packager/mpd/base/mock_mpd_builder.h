@@ -7,10 +7,11 @@
 #ifndef MPD_BASE_MOCK_MPD_BUILDER_H_
 #define MPD_BASE_MOCK_MPD_BUILDER_H_
 
-#include <absl/synchronization/mutex.h>
+#include <cstdint>
+#include <string>
+
 #include <gmock/gmock.h>
 
-#include <packager/macros/classes.h>
 #include <packager/mpd/base/adaptation_set.h>
 #include <packager/mpd/base/content_protection_element.h>
 #include <packager/mpd/base/mpd_builder.h>
@@ -60,6 +61,8 @@ class MockAdaptationSet : public AdaptationSet {
                void(const AdaptationSet* adaptation_set));
   MOCK_METHOD1(AddTrickPlayReference,
                void(const AdaptationSet* adaptation_set));
+  MOCK_METHOD2(AddAccessibility,
+               void(const std::string& scheme, const std::string& value));
 
  private:
   // Only for constructing the super class. Not used for testing.

@@ -10,6 +10,8 @@ add_library(hls_builder STATIC
   base/master_playlist.h
   base/media_playlist.cc
   base/media_playlist.h
+  base/session_index_writer.cc
+  base/session_index_writer.h
   base/simple_hls_notifier.cc
   base/simple_hls_notifier.h
   base/tag.cc
@@ -21,10 +23,12 @@ target_link_libraries(hls_builder
   absl::log
   absl::strings
   absl::str_format
+  absl::time
   file
   manifest_base
   media_base
   mpd_media_info_proto
+  nlohmann_json
   widevine_protos
   )
 
@@ -33,6 +37,7 @@ add_executable(hls_unittest
   base/media_playlist_unittest.cc
   base/mock_media_playlist.cc
   base/mock_media_playlist.h
+  base/session_index_writer_unittest.cc
   base/simple_hls_notifier_unittest.cc
   )
 

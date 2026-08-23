@@ -6,8 +6,17 @@
 
 #include <packager/mpd/base/period.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+
 #include <absl/log/check.h>
 #include <absl/log/log.h>
+#include <absl/strings/match.h>
 
 #include <packager/mpd/base/adaptation_set.h>
 #include <packager/mpd/base/mpd_options.h>
@@ -44,6 +53,18 @@ AdaptationSet::Role RoleFromString(const std::string& role_str) {
     return AdaptationSet::Role::kRoleDub;
   if (role_str == "forced-subtitle")
     return AdaptationSet::Role::kRoleForcedSubtitle;
+  if (role_str == "karaoke")
+    return AdaptationSet::Role::kRoleKaraoke;
+  if (role_str == "sign")
+    return AdaptationSet::Role::kRoleSign;
+  if (role_str == "metadata")
+    return AdaptationSet::Role::kRoleMetadata;
+  if (role_str == "enhanced-audio-intelligibility")
+    return AdaptationSet::Role::kRoleEnhancedAudioIntelligibility;
+  if (role_str == "emergency")
+    return AdaptationSet::Role::kRoleEmergency;
+  if (role_str == "easyreader")
+    return AdaptationSet::Role::kRoleEasyreader;
   if (role_str == "description")
     return AdaptationSet::Role::kRoleDescription;
   return AdaptationSet::Role::kRoleUnknown;
@@ -162,12 +183,19 @@ std::optional<xml::XmlNode> Period::GetXml(bool output_period_duration) {
       return std::nullopt;
   }
   // Iterate thru AdaptationSets and add them to one big Period element.
-  // Also force AdaptationSets Id to incremental order, which might not
-  // be the case if force_cl_index is used.
+  // We only assign IDs to AdaptationSets that don't have one yet.
+  // This is important for multi-period MPDs where AdaptationSets should
+  // have consistent IDs across periods, and SimpleMpdNotifier already
+  // manages these IDs.
   int idx = 0;
+  for (auto& adaptation_set : adaptation_sets_) {
+    if (!adaptation_set->has_id())
+      adaptation_set->set_id(idx++);
+  }
+
   for (const auto& adaptation_set : adaptation_sets_) {
     auto child = adaptation_set->GetXml();
-    if (!child || !child->SetId(idx++) || !period.AddChild(std::move(*child)))
+    if (!child || !period.AddChild(std::move(*child)))
       return std::nullopt;
   }
 
@@ -314,6 +342,22 @@ bool Period::SetNewAdaptationSetAttributes(
       media_info.has_protected_content()) {
     new_adaptation_set->set_protected_content(media_info);
     AddContentProtectionElements(media_info, new_adaptation_set);
+  }
+
+  if (media_info.has_video_info() &&
+      !media_info.video_info().has_playback_rate()) {
+    for (const auto& caption : mpd_options_.mpd_params.closed_captions) {
+      if (absl::StartsWith(caption.channel, "CC")) {
+        new_adaptation_set->AddAccessibility(
+            "urn:scte:dash:cc:cea-608:2015",
+            caption.channel + "=" + caption.language);
+      } else if (absl::StartsWith(caption.channel, "SERVICE")) {
+        std::string service_number = caption.channel.substr(7);
+        new_adaptation_set->AddAccessibility(
+            "urn:scte:dash:cc:cea-708:2015",
+            service_number + "=lang:" + caption.language);
+      }
+    }
   }
 
   return true;

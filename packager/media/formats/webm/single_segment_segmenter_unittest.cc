@@ -2,13 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <packager/media/formats/webm/two_pass_single_segment_segmenter.h>
-
+#include <cstdint>
 #include <memory>
 
 #include <gtest/gtest.h>
 
+#include <packager/file/file_test_util.h>
+#include <packager/media/base/media_sample.h>
+#include <packager/media/base/stream_info.h>
+#include <packager/media/formats/webm/segmenter.h>
 #include <packager/media/formats/webm/segmenter_test_base.h>
+#include <packager/media/formats/webm/two_pass_single_segment_segmenter.h>
+#include <packager/status/status_test_util.h>
 
 namespace shaka {
 namespace media {
@@ -63,9 +68,9 @@ const uint8_t kBasicSupportData[] = {
       0x2a, 0xd7, 0xb1, 0x83, 0x0f, 0x42, 0x40,
       // Duration: float(5000)
       0x44, 0x89, 0x84, 0x45, 0x9c, 0x40, 0x00,
-      // MuxingApp: 'libwebm-0.3.0.0'
+      // MuxingApp: 'libwebm-0.3.4.0'
       0x4d, 0x80, 0x8f, 0x6c, 0x69, 0x62, 0x77, 0x65, 0x62, 0x6d, 0x2d, 0x30,
-      0x2e, 0x33, 0x2e, 0x30, 0x2e, 0x30,
+      0x2e, 0x33, 0x2e, 0x34, 0x2e, 0x30,
       // WritingApp: 'https://github.com/shaka-project/shaka-packager version test'
       0x57, 0x41, 0xbc,
       0x68, 0x74, 0x74, 0x70, 0x73, 0x3a, 0x2f, 0x2f, 0x67, 0x69, 0x74, 0x68,

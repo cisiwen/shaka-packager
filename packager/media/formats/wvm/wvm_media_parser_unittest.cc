@@ -4,24 +4,29 @@
 
 #include <packager/media/formats/wvm/wvm_media_parser.h>
 
-#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <absl/log/log.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <packager/macros/classes.h>
-#include <packager/macros/logging.h>
 #include <packager/media/base/audio_stream_info.h>
+#include <packager/media/base/key_source.h>
+#include <packager/media/base/media_parser.h>
 #include <packager/media/base/media_sample.h>
 #include <packager/media/base/raw_key_source.h>
-#include <packager/media/base/request_signer.h>
 #include <packager/media/base/stream_info.h>
 #include <packager/media/base/timestamp.h>
 #include <packager/media/base/video_stream_info.h>
 #include <packager/media/test/test_data_util.h>
+#include <packager/status.h>
 
 namespace {
 const char kWvmFile[] = "bear-640x360.wvm";
@@ -121,9 +126,8 @@ class WvmMediaParserTest : public testing::Test {
           video_max_dts_ = sample->dts();
         } else if (video_max_dts_ >= sample->dts()) {
           LOG(ERROR) << "Video DTS not strictly increasing for track = "
-                     << track_id << ", video max dts = "
-                     << video_max_dts_ << ", sample dts = "
-                     << sample->dts();
+                     << track_id << ", video max dts = " << video_max_dts_
+                     << ", sample dts = " << sample->dts();
           return false;
         }
         video_max_dts_ = sample->dts();
@@ -185,14 +189,18 @@ TEST_F(WvmMediaParserTest, ParseWvmWithoutKeySource) {
   // Also verify that the pixel width and height have the right values.
   // Track 0 and 2 are videos and they both have pixel_width = 8 and
   // pixel_height = 9.
-  EXPECT_EQ(8u, reinterpret_cast<VideoStreamInfo*>(stream_map_[0].get())
-                    ->pixel_width());
-  EXPECT_EQ(8u, reinterpret_cast<VideoStreamInfo*>(stream_map_[2].get())
-                    ->pixel_width());
-  EXPECT_EQ(9u, reinterpret_cast<VideoStreamInfo*>(stream_map_[0].get())
-                    ->pixel_height());
-  EXPECT_EQ(9u, reinterpret_cast<VideoStreamInfo*>(stream_map_[2].get())
-                    ->pixel_height());
+  EXPECT_EQ(
+      8u,
+      reinterpret_cast<VideoStreamInfo*>(stream_map_[0].get())->pixel_width());
+  EXPECT_EQ(
+      8u,
+      reinterpret_cast<VideoStreamInfo*>(stream_map_[2].get())->pixel_width());
+  EXPECT_EQ(
+      9u,
+      reinterpret_cast<VideoStreamInfo*>(stream_map_[0].get())->pixel_height());
+  EXPECT_EQ(
+      9u,
+      reinterpret_cast<VideoStreamInfo*>(stream_map_[2].get())->pixel_height());
 }
 
 TEST_F(WvmMediaParserTest, ParseWvmInitWithoutKeySource) {
@@ -238,15 +246,15 @@ TEST_F(WvmMediaParserTest, ParseMultiConfigWvm) {
   ASSERT_EQ(4u, stream_map_.size());
 
   ASSERT_EQ(kStreamVideo, stream_map_[0]->stream_type());
-  VideoStreamInfo* video_info = reinterpret_cast<VideoStreamInfo*>(
-      stream_map_[0].get());
+  VideoStreamInfo* video_info =
+      reinterpret_cast<VideoStreamInfo*>(stream_map_[0].get());
   EXPECT_EQ("avc1.64000d", video_info->codec_string());
   EXPECT_EQ(320u, video_info->width());
   EXPECT_EQ(180u, video_info->height());
 
   ASSERT_EQ(kStreamAudio, stream_map_[1]->stream_type());
-  AudioStreamInfo* audio_info = reinterpret_cast<AudioStreamInfo*>(
-      stream_map_[1].get());
+  AudioStreamInfo* audio_info =
+      reinterpret_cast<AudioStreamInfo*>(stream_map_[1].get());
   EXPECT_EQ("mp4a.40.2", audio_info->codec_string());
   EXPECT_EQ(2u, audio_info->num_channels());
   EXPECT_EQ(44100u, audio_info->sampling_frequency());

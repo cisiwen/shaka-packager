@@ -1,0 +1,35 @@
+# Portable, fully-static shaka-packager build for Linux amd64, per
+# docs/source/build_instructions.md's "fully-static executables" section.
+# Alpine's own toolchain is musl-based, so no separate cross-toolchain is
+# needed when building natively inside an Alpine container -- just
+# -DBUILD_SHARED_LIBS=OFF -DFULLY_STATIC=ON with the default gcc/g++.
+#
+# Build (from the repo root) with buildx targeting amd64 and export just the
+# binaries to ./dist, without needing to load/run the image:
+#
+#   docker buildx build --platform linux/amd64 -f Dockerfile.static \
+#     --target export -o type=local,dest=./dist .
+#
+# Verify portability with `file dist/packager` (expect "statically linked")
+# and `ldd dist/packager` (expect "not a dynamic executable").
+
+FROM --platform=linux/amd64 alpine:3.19 AS builder
+
+RUN apk update && apk add --no-cache \
+        bash curl \
+        bsd-compat-headers linux-headers \
+        build-base cmake git ninja python3
+
+WORKDIR /shaka-packager
+COPY . /shaka-packager/
+RUN rm -rf build
+RUN cmake -S . -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DFULLY_STATIC=ON \
+      -G Ninja
+RUN cmake --build build --config Release --parallel
+
+FROM scratch AS export
+COPY --from=builder /shaka-packager/build/packager/packager /packager
+COPY --from=builder /shaka-packager/build/packager/mpd_generator /mpd_generator

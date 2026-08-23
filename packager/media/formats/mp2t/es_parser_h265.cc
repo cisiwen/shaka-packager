@@ -7,17 +7,21 @@
 #include <packager/media/formats/mp2t/es_parser_h265.h>
 
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
-#include <packager/media/base/media_sample.h>
-#include <packager/media/base/offset_byte_queue.h>
+#include <packager/media/base/fourccs.h>
+#include <packager/media/base/stream_info.h>
 #include <packager/media/base/timestamp.h>
 #include <packager/media/base/video_stream_info.h>
 #include <packager/media/codecs/h265_byte_to_unit_stream_converter.h>
 #include <packager/media/codecs/h265_parser.h>
+#include <packager/media/codecs/h26x_byte_to_unit_stream_converter.h>
 #include <packager/media/codecs/hevc_decoder_configuration_record.h>
+#include <packager/media/formats/mp2t/es_parser_h26x.h>
 #include <packager/media/formats/mp2t/mp2t_common.h>
 
 namespace shaka {
@@ -85,8 +89,13 @@ bool EsParserH265::ProcessNalu(const Nalu& nalu,
     }
     default: {
       if (nalu.is_vcl() && nalu.nuh_layer_id() == 0) {
-        const bool is_key_frame = nalu.type() == Nalu::H265_IDR_W_RADL ||
-                                  nalu.type() == Nalu::H265_IDR_N_LP;
+        // NAL types 16-21 (BLA_W_LP..CRA_NUT) are the IRAP (Intra Random
+        // Access Point) range per HEVC spec Table 7-1. Encoders commonly use
+        // CRA (not just IDR) for periodic random-access points in open-GOP
+        // structures (e.g. libx265's default), so all of them count as key
+        // frames, not just IDR.
+        const bool is_key_frame = nalu.type() >= Nalu::H265_BLA_W_LP &&
+                                  nalu.type() <= Nalu::H265_CRA_NUT;
         DVLOG(LOG_LEVEL_ES) << "Nalu: slice KeyFrame=" << is_key_frame;
         H265SliceHeader shdr;
         auto status = h265_parser_->ParseSliceHeader(nalu, &shdr);

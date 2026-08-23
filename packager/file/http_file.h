@@ -7,13 +7,16 @@
 #ifndef PACKAGER_FILE_HTTP_H_
 #define PACKAGER_FILE_HTTP_H_
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <absl/synchronization/notification.h>
 
 #include <packager/file.h>
 #include <packager/file/io_cache.h>
+#include <packager/status.h>
 
 typedef void CURL;
 struct curl_slist;
@@ -24,6 +27,7 @@ enum class HttpMethod {
   kGet,
   kPost,
   kPut,
+  kDelete,
 };
 
 /// HttpFile reads or writes network requests.
@@ -46,6 +50,8 @@ class HttpFile : public File {
 
   HttpFile(const HttpFile&) = delete;
   HttpFile& operator=(const HttpFile&) = delete;
+
+  static bool Delete(const std::string& url);
 
   Status CloseWithStatus();
 
@@ -78,6 +84,7 @@ class HttpFile : public File {
   const std::string upload_content_type_;
   const int32_t timeout_in_seconds_;
   const HttpMethod method_;
+  const bool isUpload_;
   IoCache download_cache_;
   IoCache upload_cache_;
   std::unique_ptr<CURL, CurlDelete> curl_;

@@ -26,7 +26,8 @@ class TsSectionPes : public TsSection {
   // TsSection implementation.
   bool Parse(bool payload_unit_start_indicator,
              const uint8_t* buf,
-             int size) override;
+             int size,
+             int64_t reference_pts) override;
   bool Flush() override;
   void Reset() override;
 
@@ -57,6 +58,11 @@ class TsSectionPes : public TsSection {
   bool previous_dts_valid_;
   int64_t previous_dts_;
 
+  // Most recent |reference_pts| seen by Parse(), used as a real timestamp
+  // fallback in ParseInternal() for sections that carry no PES timestamp of
+  // their own (see ts_section.h's Parse() doc).
+  int64_t reference_pts_ = 0;
+
   DISALLOW_COPY_AND_ASSIGN(TsSectionPes);
 };
 
@@ -65,4 +71,3 @@ class TsSectionPes : public TsSection {
 }  // namespace shaka
 
 #endif
-

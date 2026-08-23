@@ -4,10 +4,12 @@
 
 #include <packager/media/formats/mp2t/ts_section_pes.h>
 
+#include <cstdint>
+#include <memory>
+
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
 #include <packager/media/base/bit_reader.h>
 #include <packager/media/base/timestamp.h>
 #include <packager/media/formats/mp2t/es_parser.h>
@@ -101,12 +103,12 @@ TsSectionPes::TsSectionPes(std::unique_ptr<EsParser> es_parser)
   DCHECK(es_parser_);
 }
 
-TsSectionPes::~TsSectionPes() {
-}
+TsSectionPes::~TsSectionPes() {}
 
 bool TsSectionPes::Parse(bool payload_unit_start_indicator,
                          const uint8_t* buf,
-                         int size) {
+                         int size,
+                         int64_t reference_pts) {
   // Ignore partial PES.
   if (wait_for_pusi_ && !payload_unit_start_indicator)
     return true;
@@ -115,6 +117,9 @@ bool TsSectionPes::Parse(bool payload_unit_start_indicator,
     // Try emitting a packet since we might have a pending PES packet
     // with an undefined size.
     // In this case, a unit is emitted when the next unit is coming.
+    // Note: this uses the *previous* reference_pts_ (from whatever packet
+    // originally queued the pending data below), not the new one for this
+    // packet -- updated only after this flush.
     int raw_pes_size;
     const uint8_t* raw_pes;
     pes_byte_queue_.Peek(&raw_pes, &raw_pes_size);
@@ -127,6 +132,8 @@ bool TsSectionPes::Parse(bool payload_unit_start_indicator,
     // Update the state.
     wait_for_pusi_ = false;
   }
+
+  reference_pts_ = reference_pts;
 
   // Add the data to the parser state.
   if (size > 0)
@@ -168,8 +175,7 @@ bool TsSectionPes::Emit(bool emit_for_unknown_size) {
 
   // Check whether we have enough data to start parsing.
   int pes_packet_length =
-      (static_cast<int>(raw_pes[4]) << 8) |
-      (static_cast<int>(raw_pes[5]));
+      (static_cast<int>(raw_pes[4]) << 8) | (static_cast<int>(raw_pes[5]));
   if ((pes_packet_length == 0 && !emit_for_unknown_size) ||
       (pes_packet_length != 0 && raw_pes_size < pes_packet_length + 6)) {
     // Wait for more data to come either because:
@@ -200,9 +206,13 @@ bool TsSectionPes::ParseInternal(const uint8_t* raw_pes, int raw_pes_size) {
   RCHECK(bit_reader.ReadBits(16, &pes_packet_length));
   //RCHECK(packet_start_code_prefix == kPesStartCode);
   if (packet_start_code_prefix != kPesStartCode){
-    //TODO: find real pts dts
-    //std::cout<<"Not a PES packet; try to parse as MPEGTS with nullable pts dts: "<<base::HexEncode(&raw_pes[2], raw_pes_size - 2)<<std::endl;
-    return es_parser_->Parse(&raw_pes[1], raw_pes_size - 1, 1, 1);
+    // Not a real PES packet (e.g. a raw SCTE-35 section, as sent by TSDuck
+    // and most SCTE-35 injectors -- SCTE-35 sections carry no PES timestamp
+    // of their own). Use the most recently known real media PTS from any
+    // audio/video stream as a real "current stream time" reference instead
+    // of a placeholder -- see ts_section.h's Parse() doc.
+    return es_parser_->Parse(&raw_pes[1], raw_pes_size - 1, reference_pts_,
+                             reference_pts_);
   }
   DVLOG(LOG_LEVEL_PES) << "stream_id=" << stream_id;
   if (pes_packet_length == 0)

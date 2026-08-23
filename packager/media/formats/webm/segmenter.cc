@@ -6,19 +6,32 @@
 
 #include <packager/media/formats/webm/segmenter.h>
 
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include <absl/log/check.h>
+#include <absl/log/log.h>
+#include <common/webmids.h>
+#include <mkvmuxer/mkvmuxer.h>
 #include <mkvmuxer/mkvmuxerutil.h>
 
 #include <packager/macros/logging.h>
 #include <packager/media/base/audio_stream_info.h>
-#include <packager/media/base/media_handler.h>
+#include <packager/media/base/media_sample.h>
 #include <packager/media/base/muxer_options.h>
+#include <packager/media/base/stream_info.h>
 #include <packager/media/base/video_stream_info.h>
 #include <packager/media/codecs/vp_codec_configuration_record.h>
 #include <packager/media/event/muxer_listener.h>
 #include <packager/media/event/progress_listener.h>
 #include <packager/media/formats/webm/encryptor.h>
+#include <packager/media/formats/webm/mkv_writer.h>
 #include <packager/media/formats/webm/webm_constants.h>
+#include <packager/status.h>
 #include <packager/version/version.h>
 
 using mkvmuxer::AudioTrack;
@@ -133,8 +146,8 @@ Status Segmenter::Initialize(const StreamInfo& info,
   if (info.is_encrypted()) {
     if (info.encryption_config().per_sample_iv_size != kWebMIvSize)
       return Status(error::MUXER_FAILURE, "Incorrect size WebM encryption IV.");
-    status = UpdateTrackForEncryption(info.encryption_config().key_id,
-                                      track.get());
+    status =
+        UpdateTrackForEncryption(info.encryption_config().key_id, track.get());
     if (!status.ok())
       return status;
   }
@@ -214,9 +227,8 @@ float Segmenter::GetDurationInSeconds() const {
 }
 
 int64_t Segmenter::FromBmffTimestamp(int64_t bmff_timestamp) {
-  return NsToWebMTimecode(
-      BmffTimestampToNs(bmff_timestamp, time_scale_),
-      segment_info_.timecode_scale());
+  return NsToWebMTimecode(BmffTimestampToNs(bmff_timestamp, time_scale_),
+                          segment_info_.timecode_scale());
 }
 
 int64_t Segmenter::FromWebMTimecode(int64_t webm_timecode) {
@@ -392,8 +404,7 @@ Status Segmenter::WriteFrame(bool write_duration) {
         BmffTimestampToNs(prev_sample_->duration(), time_scale_));
   }
   frame.set_is_key(prev_sample_->is_key_frame());
-  frame.set_timestamp(
-      BmffTimestampToNs(prev_sample_->pts(), time_scale_));
+  frame.set_timestamp(BmffTimestampToNs(prev_sample_->pts(), time_scale_));
   frame.set_track_number(track_id_);
 
   if (prev_sample_->side_data_size() > 0) {

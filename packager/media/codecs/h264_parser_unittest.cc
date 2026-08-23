@@ -5,10 +5,14 @@
 
 #include <packager/media/codecs/h264_parser.h>
 
+#include <cstdint>
+#include <iterator>
+#include <vector>
+
 #include <absl/log/log.h>
 #include <gtest/gtest.h>
 
-#include <packager/macros/logging.h>
+#include <packager/media/codecs/nalu_reader.h>
 #include <packager/media/test/test_data_util.h>
 
 namespace shaka {
@@ -29,8 +33,7 @@ const uint8_t kVideoSliceTrimmed[] = {
 // PPS's entropy_coding_mode_flag is true. So slice_data() starts from the 11th
 // byte.
 const uint8_t kVideoSliceTrimmedMultipleLumaWeights[] = {
-    0x41, 0x9A, 0x72, 0x78, 0x43, 0xC9, 0x94, 0xC0,
-    0x8C, 0xFF, 0xC1, 0x54,
+    0x41, 0x9A, 0x72, 0x78, 0x43, 0xC9, 0x94, 0xC0, 0x8C, 0xFF, 0xC1, 0x54,
 };
 
 // SPS for KVideoSliceTrimmedMultipleLumaWeights.

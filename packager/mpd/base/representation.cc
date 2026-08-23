@@ -7,15 +7,21 @@
 #include <packager/mpd/base/representation.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <list>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
-#include <absl/flags/declare.h>
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 #include <absl/strings/str_format.h>
 
 #include <packager/file.h>
-#include <packager/macros/logging.h>
 #include <packager/media/base/muxer_util.h>
+#include <packager/mpd/base/media_info.pb.h>
 #include <packager/mpd/base/mpd_options.h>
 #include <packager/mpd/base/mpd_utils.h>
 #include <packager/mpd/base/xml/xml_node.h>
@@ -531,10 +537,16 @@ void Representation::RemoveOldSegment(SegmentInfo* segment_info) {
                             start_number, media_info_.bandwidth()));
   while (segments_to_be_removed_.size() >
          mpd_options_.mpd_params.preserved_segments_outside_live_window) {
-    VLOG(2) << "Deleting " << segments_to_be_removed_.front();
-    if (!File::Delete(segments_to_be_removed_.front().c_str())) {
-      LOG(WARNING) << "Failed to delete " << segments_to_be_removed_.front()
-                   << "; Will retry later.";
+    const std::string& file_name = segments_to_be_removed_.front();
+    VLOG(2) << "Deleting " << file_name;
+    // DASH and HLS outputs could both be tracking the same files and are in a
+    // race to delete them. Delete() returns false if the file does not exist,
+    // but we only want to retry if the file does exist (indicating a failure
+    // to delete, rather than the file already being gone). GetFileSize()
+    // returns >= 0 if the file exists, and < 0 if it does not.
+    if (!File::Delete(file_name.c_str()) &&
+        File::GetFileSize(file_name.c_str()) >= 0) {
+      LOG(WARNING) << "Failed to delete " << file_name << "; Will retry later.";
       break;
     }
     segments_to_be_removed_.pop_front();

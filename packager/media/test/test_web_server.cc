@@ -6,14 +6,22 @@
 
 #include <packager/media/test/test_web_server.h>
 
-#include <chrono>
+#include <mongoose.h>
+
+#include <cstddef>
+#include <memory>
 #include <random>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
-#include <mongoose.h>
+#include <absl/synchronization/mutex.h>
+#include <absl/time/clock.h>
+#include <absl/time/time.h>
 #include <nlohmann/json.hpp>
+#include <nlohmann/json_fwd.hpp>
 
 // A full replacement for our former use of httpbin.org in tests.  This
 // embedded web server can:
@@ -79,7 +87,7 @@ TestWebServer::TestWebServer() : status_(kNew), stopped_(false) {}
 
 TestWebServer::~TestWebServer() {
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     stop_.Signal();
     stopped_ = true;
   }
@@ -92,7 +100,7 @@ TestWebServer::~TestWebServer() {
 bool TestWebServer::Start() {
   thread_.reset(new std::thread(&TestWebServer::ThreadCallback, this));
 
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   while (status_ == kNew) {
     started_.Wait(&mutex_);
   }
@@ -134,7 +142,7 @@ void TestWebServer::ThreadCallback() {
   }
 
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     if (!ok) {
       // Failed to find a port to listen on.  Mongoose has already printed an
       // error message.
@@ -154,7 +162,7 @@ void TestWebServer::ThreadCallback() {
 
     // Check for a stop signal from the test.
     {
-      absl::MutexLock lock(&mutex_);
+      absl::MutexLock lock(mutex_);
       stopped = stopped_;
       if (stopped)
         status_ = kStopped;

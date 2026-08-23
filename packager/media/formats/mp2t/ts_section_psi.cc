@@ -10,7 +10,6 @@
 #include <absl/log/check.h>
 #include <absl/log/log.h>
 
-#include <packager/macros/logging.h>
 #include <packager/media/base/bit_reader.h>
 #include <packager/media/formats/mp2t/mp2t_common.h>
 
@@ -44,16 +43,14 @@ namespace media {
 namespace mp2t {
 
 TsSectionPsi::TsSectionPsi()
-    : wait_for_pusi_(true),
-      leading_bytes_to_discard_(0) {
-}
+    : wait_for_pusi_(true), leading_bytes_to_discard_(0) {}
 
-TsSectionPsi::~TsSectionPsi() {
-}
+TsSectionPsi::~TsSectionPsi() {}
 
 bool TsSectionPsi::Parse(bool payload_unit_start_indicator,
                          const uint8_t* buf,
-                         int size) {
+                         int size,
+                         int64_t /*reference_pts*/) {
   // Ignore partial PSI.
   if (wait_for_pusi_ && !payload_unit_start_indicator)
     return true;
@@ -91,8 +88,8 @@ bool TsSectionPsi::Parse(bool payload_unit_start_indicator,
   if (raw_psi_size < 3)
     return true;
   int section_length =
-      ((static_cast<int>(raw_psi[1]) << 8) |
-       (static_cast<int>(raw_psi[2]))) & 0xfff;
+      ((static_cast<int>(raw_psi[1]) << 8) | (static_cast<int>(raw_psi[2]))) &
+      0xfff;
   if (section_length >= 1021)
     return false;
   int psi_length = section_length + 3;

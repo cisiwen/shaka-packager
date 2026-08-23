@@ -7,11 +7,15 @@
 #ifndef MPD_BASE_MOCK_MPD_NOTIFIER_H_
 #define MPD_BASE_MOCK_MPD_NOTIFIER_H_
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 
-#include <packager/mpd/base/content_protection_element.h>
 #include <packager/mpd/base/media_info.pb.h>
 #include <packager/mpd/base/mpd_notifier.h>
+#include <packager/mpd/base/mpd_options.h>
 
 namespace shaka {
 
@@ -44,6 +48,7 @@ class MockMpdNotifier : public MpdNotifier {
                     const std::vector<uint8_t>& new_pssh));
   MOCK_METHOD2(NotifyMediaInfoUpdate,
                bool(uint32_t container_id, const MediaInfo& media_info));
+  MOCK_METHOD0(NotifyEndOfStream, bool());
   MOCK_METHOD0(Flush, bool());
 };
 

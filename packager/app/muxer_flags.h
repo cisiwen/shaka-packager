@@ -9,8 +9,10 @@
 #ifndef APP_MUXER_FLAGS_H_
 #define APP_MUXER_FLAGS_H_
 
+#include <cstdint>
+#include <string>
+
 #include <absl/flags/declare.h>
-#include <absl/flags/flag.h>
 
 ABSL_DECLARE_FLAG(double, clear_lead);
 ABSL_DECLARE_FLAG(double, segment_duration);
@@ -22,6 +24,7 @@ ABSL_DECLARE_FLAG(std::string, temp_dir);
 ABSL_DECLARE_FLAG(bool, mp4_include_pssh_in_stream);
 ABSL_DECLARE_FLAG(int32_t, transport_stream_timestamp_offset_ms);
 ABSL_DECLARE_FLAG(int32_t, default_text_zero_bias_ms);
+ABSL_DECLARE_FLAG(int64_t, ts_ttx_heartbeat_shift);
 ABSL_DECLARE_FLAG(int64_t, start_segment_number);
 
 #endif  // APP_MUXER_FLAGS_H_

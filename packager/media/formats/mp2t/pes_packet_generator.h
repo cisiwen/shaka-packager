@@ -7,6 +7,8 @@
 #ifndef PACKAGER_MEDIA_FORMATS_MP2T_PES_PACKET_GENERATOR_H_
 #define PACKAGER_MEDIA_FORMATS_MP2T_PES_PACKET_GENERATOR_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <list>
 #include <memory>
 

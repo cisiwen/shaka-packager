@@ -21,6 +21,8 @@ enum FourCC : uint32_t {
 
   FOURCC_aacd = 0x61616364,
   FOURCC_ac_3 = 0x61632d33,  // "ac-3"
+  // This is a fake protection scheme fourcc code to indicate HLS AES-128.
+  FOURCC_aes8 = 0x61657338,  // "aes8"
   FOURCC_ac_4 = 0x61632d34,  // "ac-4"
   FOURCC_ac3d = 0x61633364,
   FOURCC_alac = 0x616c6163,
@@ -86,7 +88,13 @@ enum FourCC : uint32_t {
   FOURCC_hvc1 = 0x68766331,
   FOURCC_hvcC = 0x68766343,
   FOURCC_hvcE = 0x68766345,
+  FOURCC_lhvC = 0x6C687643,
+  FOURCC_vexu = 0x76657875,
+  FOURCC_hfov = 0x68666f76,
+  FOURCC_iamf = 0x69616d66,
+  FOURCC_iacb = 0x69616362,
   FOURCC_iden = 0x6964656e,
+  FOURCC_ipcm = 0x6970636d,
   FOURCC_iso6 = 0x69736f36,
   FOURCC_iso8 = 0x69736f38,
   FOURCC_isom = 0x69736f6d,
@@ -184,6 +192,7 @@ enum FourCC : uint32_t {
 };
 
 const FourCC kAppleSampleAesProtectionScheme = FOURCC_cbca;
+const FourCC kAes128ProtectionScheme = FOURCC_aes8;
 
 const inline std::string FourCCToString(FourCC fourcc) {
   char buf[5];

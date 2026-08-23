@@ -7,16 +7,20 @@
 #ifndef PACKAGER_MEDIA_BASE_WIDEVINE_KEY_SOURCE_H_
 #define PACKAGER_MEDIA_BASE_WIDEVINE_KEY_SOURCE_H_
 
-#include <map>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <absl/synchronization/mutex.h>
 #include <absl/synchronization/notification.h>
 
+#include <packager/crypto_params.h>
 #include <packager/macros/classes.h>
 #include <packager/media/base/fourccs.h>
 #include <packager/media/base/key_source.h>
+#include <packager/status.h>
 
 namespace shaka {
 
@@ -26,7 +30,8 @@ namespace media {
 
 class KeyFetcher;
 class RequestSigner;
-template <class T> class ProducerConsumerQueue;
+template <class T>
+class ProducerConsumerQueue;
 
 /// WidevineKeySource talks to the Widevine encryption service to
 /// acquire the encryption keys.

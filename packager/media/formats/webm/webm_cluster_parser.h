@@ -5,16 +5,19 @@
 #ifndef PACKAGER_MEDIA_FORMATS_WEBM_WEBM_CLUSTER_PARSER_H_
 #define PACKAGER_MEDIA_FORMATS_WEBM_WEBM_CLUSTER_PARSER_H_
 
-#include <deque>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 
 #include <packager/macros/classes.h>
+#include <packager/media/base/audio_stream_info.h>
 #include <packager/media/base/decryptor_source.h>
 #include <packager/media/base/media_parser.h>
 #include <packager/media/base/media_sample.h>
+#include <packager/media/base/video_stream_info.h>
+#include <packager/media/codecs/vp_codec_configuration_record.h>
 #include <packager/media/formats/webm/webm_parser.h>
 #include <packager/media/formats/webm/webm_tracks_parser.h>
 

@@ -6,11 +6,15 @@
 
 #include <packager/media/chunking/sync_point_queue.h>
 
-#include <algorithm>
+#include <iterator>
 #include <limits>
+#include <memory>
+#include <utility>
 
 #include <absl/log/check.h>
+#include <absl/synchronization/mutex.h>
 
+#include <packager/ad_cue_generator_params.h>
 #include <packager/media/base/media_handler.h>
 
 namespace shaka {
@@ -25,20 +29,20 @@ SyncPointQueue::SyncPointQueue(const AdCueGeneratorParams& params) {
 }
 
 void SyncPointQueue::AddThread() {
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   thread_count_++;
 }
 
 void SyncPointQueue::Cancel() {
   {
-    absl::MutexLock lock(&mutex_);
+    absl::MutexLock lock(mutex_);
     cancelled_ = true;
   }
   sync_condition_.SignalAll();
 }
 
 double SyncPointQueue::GetHint(double time_in_seconds) {
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
 
   auto iter = promoted_.upper_bound(time_in_seconds);
   if (iter != promoted_.end())
@@ -55,7 +59,7 @@ double SyncPointQueue::GetHint(double time_in_seconds) {
 
 std::shared_ptr<const CueEvent> SyncPointQueue::GetNext(
     double hint_in_seconds) {
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   while (!cancelled_) {
     // Find the promoted cue that would line up with our hint, which is the
     // first cue that is not less than |hint_in_seconds|.
@@ -85,7 +89,7 @@ std::shared_ptr<const CueEvent> SyncPointQueue::GetNext(
 
 std::shared_ptr<const CueEvent> SyncPointQueue::PromoteAt(
     double time_in_seconds) {
-  absl::MutexLock lock(&mutex_);
+  absl::MutexLock lock(mutex_);
   return PromoteAtNoLocking(time_in_seconds);
 }
 

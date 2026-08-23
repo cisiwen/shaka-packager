@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <iterator>
+#include <list>
 #include <memory>
 #include <iostream>
 #include <optional>
@@ -17,15 +21,20 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <absl/log/check.h>
 #include <absl/log/log.h>
-#include <absl/strings/numbers.h>
 #include <absl/strings/str_format.h>
+#include <absl/time/civil_time.h>
+#include <absl/time/time.h>
 
 #include <packager/file.h>
 #include <packager/hls/base/tag.h>
+#include <packager/hls_params.h>
 #include <packager/macros/logging.h>
+#include <packager/media/base/fourccs.h>
 #include <packager/media/base/language_utils.h>
 #include <packager/media/base/muxer_util.h>
 #include <packager/version/version.h>
@@ -228,6 +237,11 @@ std::string CreatePlaylistHeader(
   return header;
 }
 
+}  // namespace
+
+HlsEntry::HlsEntry(HlsEntry::EntryType type) : type_(type) {}
+HlsEntry::~HlsEntry() {}
+
 class SegmentInfoEntry : public HlsEntry {
  public:
   // If |use_byte_range| true then this will append EXT-X-BYTERANGE
@@ -296,28 +310,60 @@ std::string SegmentInfoEntry::ToString() {
   return result;
 }
 
-class EncryptionInfoEntry : public HlsEntry {
+class DiscontinuityEntry : public HlsEntry {
  public:
-  EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
-                      const std::string& url,
-                      const std::string& key_id,
-                      const std::string& iv,
-                      const std::string& key_format,
-                      const std::string& key_format_versions);
+  DiscontinuityEntry();
 
   std::string ToString() override;
 
  private:
-  EncryptionInfoEntry(const EncryptionInfoEntry&) = delete;
-  EncryptionInfoEntry& operator=(const EncryptionInfoEntry&) = delete;
-
-  const MediaPlaylist::EncryptionMethod method_;
-  const std::string url_;
-  const std::string key_id_;
-  const std::string iv_;
-  const std::string key_format_;
-  const std::string key_format_versions_;
+  DiscontinuityEntry(const DiscontinuityEntry&) = delete;
+  DiscontinuityEntry& operator=(const DiscontinuityEntry&) = delete;
 };
+
+DiscontinuityEntry::DiscontinuityEntry()
+    : HlsEntry(HlsEntry::EntryType::kExtDiscontinuity) {}
+
+std::string DiscontinuityEntry::ToString() {
+  return "#EXT-X-DISCONTINUITY";
+}
+
+ProgramDateTimeEntry::ProgramDateTimeEntry(const absl::Time& program_time)
+    : HlsEntry(HlsEntry::EntryType::kProgramDateTime),
+      program_time_(program_time) {}
+
+std::string ProgramDateTimeEntry::ToString() {
+  absl::CivilSecond cs =
+      absl::ToCivilSecond(program_time_, absl::UTCTimeZone());
+
+  int64_t total_ms = absl::ToUnixMillis(program_time_);
+  int ms = static_cast<int>(total_ms % 1000);
+  if (ms < 0)
+    ms += 1000;  // correction for possible negative times
+
+  return absl::StrFormat(
+      "#EXT-X-PROGRAM-DATE-TIME:%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", cs.year(),
+      cs.month(), cs.day(), cs.hour(), cs.minute(), cs.second(), ms);
+}
+
+class PlacementOpportunityEntry : public HlsEntry {
+ public:
+  PlacementOpportunityEntry();
+
+  std::string ToString() override;
+
+ private:
+  PlacementOpportunityEntry(const PlacementOpportunityEntry&) = delete;
+  PlacementOpportunityEntry& operator=(const PlacementOpportunityEntry&) =
+      delete;
+};
+
+PlacementOpportunityEntry::PlacementOpportunityEntry()
+    : HlsEntry(HlsEntry::EntryType::kExtPlacementOpportunity) {}
+
+std::string PlacementOpportunityEntry::ToString() {
+  return "#EXT-X-PLACEMENT-OPPORTUNITY";
+}
 
 EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
                                          const std::string& url,
@@ -334,8 +380,14 @@ EncryptionInfoEntry::EncryptionInfoEntry(MediaPlaylist::EncryptionMethod method,
       key_format_versions_(key_format_versions) {}
 
 std::string EncryptionInfoEntry::ToString() {
+  return ToString("");
+}
+
+std::string EncryptionInfoEntry::ToString(std::string tag_name) {
   std::string tag_string;
-  Tag tag("#EXT-X-KEY", &tag_string);
+  if (tag_name.empty())
+    tag_name = "#EXT-X-KEY";
+  Tag tag(tag_name, &tag_string);
 
   if (method_ == MediaPlaylist::EncryptionMethod::kSampleAes) {
     tag.AddString("METHOD", "SAMPLE-AES");
@@ -366,63 +418,25 @@ std::string EncryptionInfoEntry::ToString() {
   return tag_string;
 }
 
-class DiscontinuityEntry : public HlsEntry {
- public:
-  DiscontinuityEntry();
-
-  std::string ToString() override;
-
- private:
-  DiscontinuityEntry(const DiscontinuityEntry&) = delete;
-  DiscontinuityEntry& operator=(const DiscontinuityEntry&) = delete;
-};
-
-DiscontinuityEntry::DiscontinuityEntry()
-    : HlsEntry(HlsEntry::EntryType::kExtDiscontinuity) {}
-
-std::string DiscontinuityEntry::ToString() {
-  return "#EXT-X-DISCONTINUITY";
-}
-
-class PlacementOpportunityEntry : public HlsEntry {
- public:
-  PlacementOpportunityEntry();
-
-  std::string ToString() override;
-
- private:
-  PlacementOpportunityEntry(const PlacementOpportunityEntry&) = delete;
-  PlacementOpportunityEntry& operator=(const PlacementOpportunityEntry&) =
-      delete;
-};
-
-PlacementOpportunityEntry::PlacementOpportunityEntry()
-    : HlsEntry(HlsEntry::EntryType::kExtPlacementOpportunity) {}
-
-std::string PlacementOpportunityEntry::ToString() {
-  return "#EXT-X-PLACEMENT-OPPORTUNITY";
-}
-
-
 class XCueOut : public HlsEntry {
  public:
-  XCueOut(float duration_seconds, uint8_t id, std::string scte_data, std::string date_time, std::string advert_url);
+  XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url);
 
   std::string ToString() override;
 
- 
+
   float duration_seconds_;
   std::string date_time_;
   std::string scte_data_;
   std::string advert_url_;
-  uint8_t id_;
+  uint32_t id_;
   private:
   XCueOut(const XCueOut&) = delete;
   XCueOut& operator=(const XCueOut&) =
       delete;
 };
 
-XCueOut::XCueOut(float duration_seconds, uint8_t id, std::string scte_data, std::string date_time, std::string advert_url)
+XCueOut::XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url)
     : HlsEntry(HlsEntry::EntryType::kExtCueOut),
     duration_seconds_(duration_seconds),
     date_time_(date_time),
@@ -471,21 +485,21 @@ std::string XCueCont::ToString() {
 
 class XCueIn : public HlsEntry {
  public:
-  XCueIn(uint8_t id, std::string scte_data, bool need_date_time);
+  XCueIn(uint32_t id, std::string scte_data, bool need_date_time);
 
   std::string ToString() override;
 
  private:
   std::string date_time_;
   std::string scte_data_;
-  bool need_date_time_;
-  uint8_t id_;
+  [[maybe_unused]] bool need_date_time_;
+  [[maybe_unused]] uint32_t id_;
   XCueIn(const XCueIn&) = delete;
   XCueIn& operator=(const XCueIn&) =
       delete;
 };
 
-XCueIn::XCueIn( uint8_t id, std::string scte_data, bool need_date_time)
+XCueIn::XCueIn( uint32_t id, std::string scte_data, bool need_date_time)
     : HlsEntry(HlsEntry::EntryType::kExtCueIn),
     scte_data_(scte_data),
     need_date_time_(need_date_time),
@@ -500,24 +514,26 @@ std::string XCueIn::ToString() {
   return "#EXT-X-CUE-IN";
 }
 
-}  // namespace
-
-HlsEntry::HlsEntry(HlsEntry::EntryType type) : type_(type) {}
-HlsEntry::~HlsEntry() {}
-
 MediaPlaylist::MediaPlaylist(const HlsParams& hls_params,
                              const std::string& file_name,
                              const std::string& name,
-                             const std::string& group_id)
+                             const std::string& group_id,
+                             bool is_rotation)
     : hls_params_(hls_params),
+      is_rotation_(is_rotation),
       file_name_(file_name),
       name_(name),
       group_id_(group_id),
-      media_sequence_number_(hls_params_.media_sequence_number) {
-        // When there's a forced media_sequence_number, start with discontinuity
-        if (media_sequence_number_ > 0)
-          entries_.emplace_back(new DiscontinuityEntry());
-      }
+      media_sequence_number_(is_rotation ? 0
+                                         : hls_params_.media_sequence_number),
+      reference_time_(absl::InfinitePast()) {
+  // When there's a forced media_sequence_number, start with discontinuity.
+  // Rotated instances (is_rotation) always start at 0 and skip this --
+  // hls_params_.media_sequence_number only applies to the first playlist of
+  // a session (see #691).
+  if (media_sequence_number_ > 0)
+    entries_.emplace_back(new DiscontinuityEntry());
+}
 
 MediaPlaylist::~MediaPlaylist() {}
 
@@ -539,8 +555,23 @@ void MediaPlaylist::SetCharacteristicsForTesting(
   characteristics_ = characteristics;
 }
 
+void MediaPlaylist::SetIndexForTesting(uint32_t index) {
+  media_info_.set_index(index);
+}
+
 void MediaPlaylist::SetForcedSubtitleForTesting(const bool forced_subtitle) {
   forced_subtitle_ = forced_subtitle;
+}
+
+void MediaPlaylist::AddEncryptionInfoForTesting(
+    MediaPlaylist::EncryptionMethod method,
+    const std::string& url,
+    const std::string& key_id,
+    const std::string& iv,
+    const std::string& key_format,
+    const std::string& key_format_versions) {
+  entries_.emplace_back(new EncryptionInfoEntry(
+      method, url, key_id, iv, key_format, key_format_versions));
 }
 
 bool MediaPlaylist::SetMediaInfo(const MediaInfo& media_info) {
@@ -615,6 +646,10 @@ void MediaPlaylist::AddSegment(const std::string& file_name,
                              size);
 }
 
+void MediaPlaylist::SetReferenceTime(const absl::Time& reference_time) {
+  reference_time_ = reference_time;
+}
+
 void MediaPlaylist::AddKeyFrame(int64_t timestamp,
                                 uint64_t start_byte_offset,
                                 uint64_t size) {
@@ -631,11 +666,10 @@ void MediaPlaylist::AddKeyFrame(int64_t timestamp,
 }
 
 void MediaPlaylist::AddScte35Event(int64_t timestamp,
-                                int64_t duration, const std::string& cue_data) {
-  last_scte_id++;
-  LOG(INFO)<<"HLS added SCTE35 duration "<<duration<<std::endl;
-  scte35_events_.push_back({last_scte_id, timestamp, duration, cue_data,""});
-  //scte35_events_.push_back({last_scte_id, timestamp, 90*time_scale_, cue_data,""}); // test: generate 90 sec duration adverts
+                                int64_t duration, const std::string& cue_data,
+                                uint32_t splice_event_id) {
+  LOG(INFO)<<"HLS added SCTE35 duration "<<duration<<" event_id "<<splice_event_id<<std::endl;
+  scte35_events_.push_back({splice_event_id, timestamp, duration, cue_data,""});
 }
 
 
@@ -676,11 +710,30 @@ void MediaPlaylist::AddXCueIn(Scte35 scte35) {
   entries_.emplace_back(new XCueIn(scte35.id, scte35.cue_data, need_date_time_));
 }
 
-bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
+bool MediaPlaylist::HasOpenAdBreak() const {
+  // current_Scte35_.duration > 0 means a cue-out has been applied to the
+  // playlist with no matching cue-in yet. scte35_events_ non-empty means a
+  // SCTE-35 event (cue-out or cue-in) has arrived but not yet been drained
+  // into the playlist by AddSegmentInfoEntry -- treat that as "in flux" too,
+  // so rotation never races a not-yet-applied signal.
+  return current_Scte35_.duration > 0 || !scte35_events_.empty();
+}
+
+bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path,
+                                bool event_to_vod_on_end_of_stream,
+                                bool end_stream,
+                                bool force_endlist) {
   if (!target_duration_set_) {
     SetTargetDuration(ceil(GetLongestSegmentDuration()));
   }
   int64_t start_time = 0;
+
+  HlsPlaylistType playlist_type = hls_params_.playlist_type;
+  if ((event_to_vod_on_end_of_stream && end_stream &&
+       playlist_type == HlsPlaylistType::kEvent) ||
+      force_endlist) {
+    playlist_type = HlsPlaylistType::kVod;
+  }
 
   for (auto iter = entries_.begin(); iter != entries_.end(); ++iter) {
       if (iter->get()->type() == HlsEntry::EntryType::kExtInf) {
@@ -690,12 +743,19 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
         break;
       }
     }
+  // Only emit the header-level EXT-X-PROGRAM-DATE-TIME when pts_time_offset
+  // is explicitly configured (used to correct datetimes across ffmpeg
+  // restarts); otherwise this must stay empty to match default behavior.
+  const std::string header_program_datetime =
+      hls_params_.pts_time_offset != 0
+          ? start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset)
+          : "";
   std::string content = CreatePlaylistHeader(
-      media_info_, target_duration_, hls_params_.playlist_type, stream_type_,
+      media_info_, target_duration_, playlist_type, stream_type_,
       media_sequence_number_, discontinuity_sequence_number_,
-      hls_params_.start_time_offset, start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset));
- 
-    LOG(INFO)<<"HLS header program datetime "<<start_time<< " offset: "<<hls_params_.pts_time_offset<<" "<<start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset)<<std::endl;
+      hls_params_.start_time_offset, header_program_datetime);
+
+    LOG(INFO)<<"HLS header program datetime "<<start_time<< " offset: "<<hls_params_.pts_time_offset<<" "<<header_program_datetime<<std::endl;
   //for (const auto& entry : entries_)
 /*  if (previous_Scte35_.duration > 0  && previous_Scte35_.timestamp <= start_time){
     if(previous_Scte35_.timestamp <= static_cast<uint64_t>(start_time) + hls_params_.time_shift_buffer_depth)*/
@@ -706,7 +766,7 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path) {
   for (const auto& entry : entries_)
     absl::StrAppendFormat(&content, "%s\n", entry->ToString().c_str());
 
-  if (hls_params_.playlist_type == HlsPlaylistType::kVod) {
+  if (playlist_type == HlsPlaylistType::kVod) {
     content += "#EXT-X-ENDLIST\n";
   }
 
@@ -847,16 +907,36 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
       if (iter.timestamp <= start_time){
         if (iter.duration >= 0){
           current_Scte35_ = iter;
+          // Anchor the synthetic-close threshold (below) and the CUE-CONT
+          // "passed" calculation to the segment start_time at which this
+          // CUE-OUT actually becomes visible in the playlist, not to
+          // iter.timestamp's raw capture instant. iter.timestamp can precede
+          // this by up to one segment_duration (the event sits queued until
+          // this check first notices iter.timestamp <= start_time), which
+          // otherwise makes every ad's visible duration undershoot its
+          // declared duration by that same, otherwise-unaccounted-for gap.
+          current_Scte35_.timestamp = start_time;
           //current_Scte35_.datetime = time_in_HH_MM_SS_MMM(1000*hls_params_.time_shift_buffer_depth);
           LOG(INFO)<<"HLS: XCueOut "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
           current_Scte35_.datetime = start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset);
           AddXCueOut(current_Scte35_);
         }
         else {
-          LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
-          current_Scte35_ = {0,0,0,"",""};
-          //TODO: check if needed if no cue was before
-          AddXCueIn(current_Scte35_);
+          // Only close the break this cue-in claims to end if it's actually
+          // still open and matches this cue-in's event id. Without this, a
+          // real return command that arrives after the synthetic fallback
+          // below has already closed the break (e.g. because the break ran
+          // longer than its declared duration) would emit a second, redundant
+          // #EXT-X-CUE-IN, and/or a cue-in for one event could incorrectly
+          // close an unrelated, still-open break for a different event.
+          if (current_Scte35_.duration > 0 && current_Scte35_.id == iter.id) {
+            LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
+            current_Scte35_ = {0,0,0,"",""};
+            AddXCueIn(current_Scte35_);
+          } else {
+            LOG(INFO)<<"HLS: ignoring SCTE35 cue-in for event "<<iter.id
+                     <<" -- no matching open break (already closed, or id mismatch)"<<std::endl;
+          }
         }
         scte35_events_.pop_front();
         inserted_cue = true;
@@ -892,6 +972,40 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
           << segment_info->start_time() << " as the next segment starts at "
           << start_time << ".";
       entries_.emplace_back(new DiscontinuityEntry());
+    }
+  }
+
+  if (hls_params_.add_program_date_time &&
+      reference_time_ != absl::InfinitePast()) {
+    // See if we need to add a program date time tag. It is added before the
+    // first segment, and after every discontinuity.
+    bool is_first_segment = true;
+    bool is_discontinuity = false;
+    if (!entries_.empty()) {
+      for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
+        if ((*it)->type() == HlsEntry::EntryType::kExtInf) {
+          is_first_segment = false;
+          break;
+        }
+      }
+
+      const auto& last = *entries_.back();
+      if (last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
+        is_discontinuity = true;
+      } else if (entries_.size() >= 2) {
+        const auto& second_last = **std::prev(entries_.cend(), 2);
+        if (last.type() == HlsEntry::EntryType::kExtKey &&
+            second_last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
+          is_discontinuity = true;
+        }
+      }
+    }
+
+    if (is_first_segment || is_discontinuity) {
+      const absl::Time program_time =
+          reference_time_ +
+          absl::Seconds(static_cast<double>(start_time) / time_scale_);
+      entries_.emplace_back(new ProgramDateTimeEntry(program_time));
     }
   }
 
@@ -936,7 +1050,14 @@ void MediaPlaylist::AdjustLastSegmentInfoEntryDuration(int64_t next_timestamp) {
 // MediaPlaylist.
 void MediaPlaylist::SlideWindow() {
   if (hls_params_.time_shift_buffer_depth <= 0.0 ||
-      hls_params_.playlist_type != HlsPlaylistType::kLive) {
+      hls_params_.playlist_type != HlsPlaylistType::kLive || is_rotation_) {
+    // Archive/rotation instances (is_rotation_) are meant to be a complete,
+    // self-contained recording of their hour -- trimming down to a live
+    // time-shift window would defeat that, so trimming is disabled entirely
+    // for the (bounded, ~1-hour-long) lifetime of each instance. This is a
+    // per-instance check (not a global hls_params_ flag) because the live
+    // and archive MediaPlaylist for the same stream share the same
+    // hls_params_ -- only the archive one should skip trimming.
     return;
   }
   DCHECK_GT(time_scale_, 0);
@@ -1011,10 +1132,16 @@ void MediaPlaylist::RemoveOldSegment(int64_t start_time) {
       media_info_.bandwidth()));
   while (segments_to_be_removed_.size() >
          hls_params_.preserved_segments_outside_live_window) {
-    VLOG(2) << "Deleting " << segments_to_be_removed_.front();
-    if (!File::Delete(segments_to_be_removed_.front().c_str())) {
-      LOG(WARNING) << "Failed to delete " << segments_to_be_removed_.front()
-                   << "; Will retry later.";
+    const std::string& file_name = segments_to_be_removed_.front();
+    VLOG(2) << "Deleting " << file_name;
+    // DASH and HLS outputs could both be tracking the same files and are in a
+    // race to delete them. Delete() returns false if the file does not exist,
+    // but we only want to retry if the file does exist (indicating a failure
+    // to delete, rather than the file already being gone). GetFileSize()
+    // returns >= 0 if the file exists, and < 0 if it does not.
+    if (!File::Delete(file_name.c_str()) &&
+        File::GetFileSize(file_name.c_str()) >= 0) {
+      LOG(WARNING) << "Failed to delete " << file_name << "; Will retry later.";
       break;
     }
     segments_to_be_removed_.pop_front();
