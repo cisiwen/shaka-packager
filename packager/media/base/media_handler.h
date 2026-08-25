@@ -63,6 +63,11 @@ struct SegmentInfo {
   bool is_chunk = false;
   bool is_final_chunk_in_seg = false;
   bool is_encrypted = false;
+  // True when this segment was the one immediately following a live SCTE-35/CueEvent-forced
+  // boundary (see ChunkingHandler::ForceSegmentBoundaryAt) - lets SegmentCoordinator identify
+  // exactly which of the sync source's segments to propagate to follower streams (e.g. audio
+  // following video's real splice cut), rather than every regular periodic segment.
+  bool is_cue_aligned = false;
   int64_t start_timestamp = -1;
   int64_t duration = 0;
   int64_t segment_number = 1;
