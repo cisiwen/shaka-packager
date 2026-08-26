@@ -163,6 +163,79 @@ TEST_F(ChunkingHandlerTest, VideoAndSubsegmentAndNonzeroStart) {
                         kDuration, !kEncrypted, _)));
 }
 
+// Live in-band SCTE-35 must force an early segment exactly like CueEvent does (see
+// ChunkingHandler::OnScte35Event's own doc comment on why audio/video would otherwise stay
+// misaligned around a real ad break) - but, unlike CueEvent, must NOT synthesize/dispatch a
+// CueEvent downstream: that message reaching this stream's own Muxer would trigger an unrelated
+// #EXT-X-PLACEMENT-OPPORTUNITY tag (MuxerListener::OnCueEvent) instead of the proper
+// #EXT-X-DATERANGE/CUE-OUT/CUE-IN reporting, which the unmodified kScte35Event passthrough
+// already drives independently.
+MATCHER_P2(IsScte35EventPassthrough, stream_index, event, "") {
+  return arg->stream_index == static_cast<size_t>(stream_index) &&
+         arg->stream_data_type == StreamDataType::kScte35Event &&
+         arg->scte35_event == event;
+}
+
+TEST_F(ChunkingHandlerTest, Scte35Event) {
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;
+  chunking_params.subsegment_duration_in_seconds = 0.5;
+  SetUpChunkingHandler(1, chunking_params);
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetVideoStreamInfo(kTimeScale1))));
+  ClearOutputStreamDataVector();
+
+  const int64_t kVideoStartTimestamp = 12345;
+  const double kCueTimeInSeconds =
+      static_cast<double>(kVideoStartTimestamp + kDuration) / kTimeScale1;
+  // SCTE-35 timestamps are always in 90kHz ticks, independent of this stream's own time_scale_ -
+  // see OnScte35Event's own conversion.
+  const int64_t kScte35StartTime90k =
+      static_cast<int64_t>(kCueTimeInSeconds * 90000);
+
+  auto scte35_event = std::make_shared<SCTE35Event>(
+      "cue-id", kScte35StartTime90k, /*duration=*/0);
+
+  for (int i = 0; i < 6; ++i) {
+    const bool is_key_frame = true;
+    ASSERT_OK(Process(StreamData::FromMediaSample(
+        kStreamIndex, GetMediaSample(kVideoStartTimestamp + i * kDuration,
+                                     kDuration, is_key_frame))));
+    if (i == 0) {
+      ASSERT_OK(Process(
+          StreamData::FromScte35Event(kStreamIndex, scte35_event)));
+    }
+  }
+
+  // Identical segmentation shape to the CueEvent test above - the SCTE-35 event forces the same
+  // early segment - but IsScte35EventPassthrough (the original message, unmodified) appears
+  // where IsCueEvent appeared there, and no CueEvent is ever emitted.
+  EXPECT_THAT(
+      GetOutputStreamDataVector(),
+      ElementsAre(
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp, kDuration,
+                        !kEncrypted, _),
+          // A new segment is created due to the existance of the SCTE-35 event.
+          IsSegmentInfo(kStreamIndex, kVideoStartTimestamp, kDuration,
+                        !kIsSubsegment, !kEncrypted),
+          IsScte35EventPassthrough(kStreamIndex, scte35_event),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 1,
+                        kDuration, !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 2,
+                        kDuration, !kEncrypted, _),
+          IsSegmentInfo(kStreamIndex, kVideoStartTimestamp + kDuration,
+                        kDuration * 2, kIsSubsegment, !kEncrypted),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 3,
+                        kDuration, !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 4,
+                        kDuration, !kEncrypted, _),
+          IsSegmentInfo(kStreamIndex, kVideoStartTimestamp + kDuration,
+                        kDuration * 4, !kIsSubsegment, !kEncrypted),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 5,
+                        kDuration, !kEncrypted, _)));
+}
+
 TEST_F(ChunkingHandlerTest, CueEvent) {
   ChunkingParams chunking_params;
   chunking_params.segment_duration_in_seconds = 1;

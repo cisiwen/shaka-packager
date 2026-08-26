@@ -45,6 +45,20 @@ class ChunkingHandler : public MediaHandler {
   explicit ChunkingHandler(const ChunkingParams& chunking_params);
   ~ChunkingHandler() override = default;
 
+  // Forces the current segment to end immediately and the next eligible sample to start a fresh
+  // one at event_time_in_seconds, exactly like a live SCTE-35 event does (see OnScte35Event) -
+  // but callable directly, outside the normal StreamData/Process() graph dispatch. This is how a
+  // follower stream (e.g. audio) is driven by SegmentCoordinator to cut at the *actual* timestamp
+  // a sync source stream (e.g. video) really cut at, once that's known - which for video, gated
+  // on its own next real keyframe, may not be knowable until well after the live SCTE-35 event
+  // itself first arrived. Reacting to a stream's own independent, symmetric SCTE-35 handling
+  // (OnScte35Event alone) still leaves two unsynchronized decisions that can drift apart under
+  // ordinary thread-scheduling jitter - confirmed against multiple real deployment tests where
+  // video's own forced-keyframe timing and audio's own independent reaction diverged by anywhere
+  // from ~150ms to a full missed GOP. Deriving the follower's cut directly from the sync source's
+  // own realized cut removes that independent-decision race entirely.
+  Status ForceSegmentBoundaryNow(double event_time_in_seconds);
+
  protected:
   /// @name MediaHandler implementation overrides.
   /// @{
@@ -61,10 +75,23 @@ class ChunkingHandler : public MediaHandler {
 
   Status OnStreamInfo(std::shared_ptr<const StreamInfo> info);
   Status OnCueEvent(std::shared_ptr<const CueEvent> event);
+  // Live in-band SCTE-35 (parsed from a real MPEG-TS SCTE-35 PID) arrives as this distinct
+  // message type, separate from CueEvent (which is exclusive to the ad_cue_generator/
+  // CueAlignmentHandler server-side model and never fires for the in-band case). Builds an
+  // equivalent CueEvent from it and forwards to OnCueEvent - see chunking_handler.cc's own doc
+  // comment on this case for why every stream needs to react to this uniformly, not just
+  // whichever stream's own samples happen to cross a segment boundary near the splice point.
+  Status OnScte35Event(std::shared_ptr<const SCTE35Event> event);
   Status OnMediaSample(std::shared_ptr<const MediaSample> sample);
 
   Status EndSegmentIfStarted();
   Status EndSubsegmentIfStarted() const;
+
+  // Shared by OnCueEvent and OnScte35Event - the actual "start fresh after this timestamp"
+  // effect, factored out so OnScte35Event can reuse it without OnCueEvent's own
+  // DispatchCueEvent side effect (see OnScte35Event's own doc comment in the .cc for why that
+  // specifically must not happen for a live in-band SCTE-35 event).
+  void ForceSegmentBoundaryAt(double event_time_in_seconds);
 
   bool IsSubsegmentEnabled() {
     return subsegment_duration_ > 0 &&
@@ -95,6 +122,15 @@ class ChunkingHandler : public MediaHandler {
   // The offset is applied to sample timestamps so a full segment is generated
   // after cue points.
   int64_t cue_offset_ = 0;
+
+  // Marks exactly one segment - the one immediately following a cue-forced boundary - as
+  // is_cue_aligned in its own SegmentInfo (see that field's own doc comment). next_ is set the
+  // instant a boundary is forced (ForceSegmentBoundaryAt); current_ latches it the instant the
+  // *next* segment actually starts (OnMediaSample) so EndSegmentIfStarted can stamp the right
+  // outgoing SegmentInfo, then both are consumed/reset so a later, unrelated segment never
+  // inherits the flag.
+  bool next_segment_cue_aligned_ = false;
+  bool current_segment_cue_aligned_ = false;
 
   // Unwraps 33-bit PTS/DTS timestamps to 64-bit monotonically increasing
   // values, handling wrap-around at 2^33. This ensures SegmentInfo timestamps

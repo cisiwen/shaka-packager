@@ -745,8 +745,25 @@ Status CreateAudioVideoJobs(
         handlers.emplace_back(cue_aligner);
       }
 
-      // Track stream index for SegmentCoordinator
-      size_t stream_index = stream_counters[stream.input]++;
+      // Track stream index for SegmentCoordinator. Must count only streams that actually connect
+      // to segment_coordinator (every !is_scte35 stream, video/audio via the branch below or
+      // text via the is_text branch further down - see either branch's own
+      // handlers.emplace_back(segment_coordinator) call) - NOT every StreamDescriptor
+      // unconditionally. segment_coordinator's own internal "which input port did this arrive
+      // on" numbering (assigned by AddHandler, called only when a stream actually connects) skips
+      // is_scte35 streams entirely, since those never call AddHandler on it at all. Counting them
+      // here anyway silently shifts every stream_index after the first is_scte35 entry out of
+      // sync with the coordinator's own real port numbers - confirmed as a real bug via a local
+      // Docker test: with processing order audio/scte35/video, this used to assign video
+      // stream_index=2, but the coordinator's own real port for video was 1 (scte35's port was
+      // never actually allocated) - MarkAsTeletextStream/RegisterCueFollower's target ended up
+      // silently wrong for video specifically, which is exactly why registering audio as a cue
+      // follower had zero effect in production (video's own SegmentInfo never actually reached
+      // OnSegmentInfo as the intended sync source).
+      size_t stream_index = static_cast<size_t>(-1);
+      if (!is_scte35) {
+        stream_index = stream_counters[stream.input]++;
+      }
       if (is_teletext) {
         segment_coordinator->MarkAsTeletextStream(stream_index);
       }
@@ -754,9 +771,23 @@ Status CreateAudioVideoJobs(
       if (!is_text && !is_scte35) {
         // For video/audio: ChunkingHandler first, then SegmentCoordinator
         // SegmentInfo from ChunkingHandler will reach the coordinator
-        handlers.emplace_back(std::make_shared<ChunkingHandler>(
-            packaging_params.chunking_params));
+        auto chunking_handler = std::make_shared<ChunkingHandler>(
+            packaging_params.chunking_params);
+        handlers.emplace_back(chunking_handler);
         handlers.emplace_back(segment_coordinator);
+        // Every media stream (video and audio) reacts immediately to the same raw live SCTE-35
+        // event - see RegisterScte35ImmediateReceiver's own doc comment for why this, not just the
+        // sync-source-driven correction below, is required to avoid a full extra segment_duration
+        // of latency confirmed via real deployment testing.
+        segment_coordinator->RegisterScte35ImmediateReceiver(chunking_handler);
+        // Audio has no keyframe concept of its own (see ChunkingHandler::OnScte35Event's own
+        // doc comment) - registering it as a cue follower ADDITIONALLY lets the coordinator tighten
+        // its segmentation from video's own realized splice cut once that's known, as a secondary
+        // correction on top of its own immediate reaction above (see
+        // SegmentCoordinator::RegisterCueFollower's own doc comment).
+        if (stream.stream_selector == "audio") {
+          segment_coordinator->RegisterCueFollower(stream_index, chunking_handler);
+        }
         Status enc_handler_status;
         handlers.emplace_back(CreateEncryptionHandler(packaging_params, stream,
                                                       encryption_key_source,
@@ -765,6 +796,15 @@ Status CreateAudioVideoJobs(
       } else if (is_text) {
         // For text: SegmentCoordinator before TextChunker
         // So it can forward SegmentInfo from video/audio to TextChunker
+        handlers.emplace_back(segment_coordinator);
+      } else if (is_scte35) {
+        // The SCTE-35 stream carries no media samples of its own - it only ever emits kStreamInfo
+        // and kScte35Event. Routing it through segment_coordinator (instead of straight to
+        // replicator/muxer) is what lets SegmentCoordinator::Process()'s kScte35Event case drive
+        // every registered immediate receiver (video's and audio's ChunkingHandler) directly - see
+        // RegisterScte35ImmediateReceiver's own doc comment. The event still reaches this stream's
+        // own Muxer unchanged afterward (SegmentCoordinator dispatches it onward), so
+        // DATERANGE/CUE-OUT/CUE-IN reporting is unaffected.
         handlers.emplace_back(segment_coordinator);
       }
 

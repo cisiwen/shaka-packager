@@ -11,14 +11,18 @@
 #include <initializer_list>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <packager/chunking_params.h>
 #include <packager/macros/status.h>
 #include <packager/media/base/media_handler.h>
 #include <packager/media/base/media_handler_test_base.h>
 #include <packager/media/base/stream_info.h>
+#include <packager/media/base/scte35_event.h>
+#include <packager/media/chunking/chunking_handler.h>
 #include <packager/status.h>
 #include <packager/status/status_test_util.h>
 
@@ -360,6 +364,158 @@ TEST_F(SegmentCoordinatorTest, SubsegmentsNotReplicated) {
                                    kSegmentDuration, kSegmentNumber));
 
   ASSERT_OK(FlushAll({kVideoStreamIndex, kTeletextStreamIndex}));
+}
+
+// Test 6: DrivesCueFollowerOnCueAlignedSegment
+// Verify that a registered cue-follower's own ChunkingHandler is driven directly (via
+// ForceSegmentBoundaryNow) - cutting an in-progress segment short at the sync source's realized
+// cut timestamp - when, and only when, the sync source reports a cue-aligned SegmentInfo. Uses a
+// real ChunkingHandler as the follower, wired standalone (FakeInputMediaHandler ->
+// ChunkingHandler -> CachingMediaHandler) since MediaHandlerTestBase's own Input()/Output()
+// bookkeeping only supports one handler-under-test (the coordinator itself) at a time.
+TEST_F(SegmentCoordinatorTest, DrivesCueFollowerOnCueAlignedSegment) {
+  SetUpCoordinator(kThreeInputs, kThreeOutputs);
+
+  const int32_t kAudioTimescale = 1000;
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;  // 1000 ticks at kAudioTimescale.
+
+  auto follower_input = std::make_shared<FakeInputMediaHandler>();
+  auto follower = std::make_shared<ChunkingHandler>(chunking_params);
+  auto follower_output = std::make_shared<CachingMediaHandler>();
+  ASSERT_OK(MediaHandler::Chain({follower_input, follower, follower_output}));
+  ASSERT_OK(follower->Initialize());
+
+  coordinator_->RegisterCueFollower(kAudioStreamIndex, follower);
+
+  // Follower's own stream info (establishes its time_scale) and three in-progress samples
+  // (0-600 ticks accumulated so far) - this segment would naturally keep running to the full
+  // 1000 ticks (segment_duration_in_seconds=1) with no outside intervention.
+  ASSERT_OK(follower_input->Dispatch(
+      StreamData::FromStreamInfo(kStreamIndex, GetAudioStreamInfo(kAudioTimescale))));
+  for (int64_t start : {0, 200, 400}) {
+    ASSERT_OK(follower_input->Dispatch(
+        StreamData::FromMediaSample(kStreamIndex, GetMediaSample(start, 200, true))));
+  }
+  follower_output->Clear();
+
+  // Video (sync source) reports a cue-aligned segment whose own realized cut lands at 0.6s in
+  // real time - deliberately not a round multiple of the follower's own 1s segment_duration_, to
+  // prove the follower is driven by this timestamp specifically, not by its own periodic grid.
+  ASSERT_OK(DispatchStreamInfo(kVideoStreamIndex, StreamType::kStreamVideo));
+  auto video_info = std::make_shared<SegmentInfo>();
+  video_info->start_timestamp = static_cast<int64_t>(0.6 * kTimescale);  // video's own timescale
+  video_info->duration = 1;
+  video_info->segment_number = 1;
+  video_info->is_cue_aligned = true;
+  ASSERT_OK(Input(kVideoStreamIndex)
+                ->Dispatch(StreamData::FromSegmentInfo(kStreamIndex, video_info)));
+
+  // The follower's in-progress segment (started at 0) should already have been force-ended by
+  // the call above. Feeding it one more sample - still well before its own natural 1000-tick
+  // boundary - should show a fresh segment starting, proving the force landed at 0.6s (600
+  // ticks at kAudioTimescale) rather than waiting for the natural schedule.
+  ASSERT_OK(follower_input->Dispatch(
+      StreamData::FromMediaSample(kStreamIndex, GetMediaSample(700, 200, true))));
+  ASSERT_OK(follower_input->FlushAllDownstreams());
+
+  bool found_forced_segment = false;
+  for (const auto& data : follower_output->Cache()) {
+    if (data->stream_data_type == StreamDataType::kSegmentInfo) {
+      const auto& info = data->segment_info;
+      if (info->start_timestamp == 0 && info->duration == 600) {
+        found_forced_segment = true;
+      }
+      // No natural (unforced) 1000-tick segment should ever appear - that would mean the force
+      // was ignored and the follower just ran its own regular periodic schedule instead.
+      EXPECT_NE(info->duration, 1000);
+    }
+  }
+  EXPECT_TRUE(found_forced_segment)
+      << "expected a segment forced short (start=0, duration=600) by the sync source's "
+      << "cue-aligned cut, matching video's own realized 0.6s splice point";
+}
+
+// Test 7: DrivesAllImmediateReceiversOnScte35Event
+// Verify that EVERY registered immediate receiver (video's AND audio's ChunkingHandler, not just
+// one "primary") is driven directly (via ForceSegmentBoundaryNow) - cutting an in-progress segment
+// short at the live SCTE-35 event's own timestamp - when a single kScte35Event arrives on the
+// coordinator, and that the event still passes through unchanged to this stream's own output (for
+// Muxer/HLS DATERANGE/CUE-OUT reporting). This is what closes almost the entire alignment gap on
+// each stream's own, immediately - see RegisterScte35ImmediateReceiver's own doc comment for why a
+// single "primary" receiver alone left a full extra segment_duration of latency on every follower.
+TEST_F(SegmentCoordinatorTest, DrivesAllImmediateReceiversOnScte35Event) {
+  SetUpCoordinator(kThreeInputs, kThreeOutputs);
+
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;  // 90000 ticks at kTimescale.
+
+  auto MakeReceiver = [&]() {
+    auto input = std::make_shared<FakeInputMediaHandler>();
+    auto handler = std::make_shared<ChunkingHandler>(chunking_params);
+    auto output = std::make_shared<CachingMediaHandler>();
+    return std::make_tuple(input, handler, output);
+  };
+
+  auto [video_input, video_handler, video_output] = MakeReceiver();
+  auto [audio_input, audio_handler, audio_output] = MakeReceiver();
+  ASSERT_OK(MediaHandler::Chain({video_input, video_handler, video_output}));
+  ASSERT_OK(MediaHandler::Chain({audio_input, audio_handler, audio_output}));
+  ASSERT_OK(video_handler->Initialize());
+  ASSERT_OK(audio_handler->Initialize());
+
+  coordinator_->RegisterScte35ImmediateReceiver(video_handler);
+  coordinator_->RegisterScte35ImmediateReceiver(audio_handler);
+
+  // Both receivers' own stream info and three in-progress samples (0-54000 ticks accumulated so
+  // far, matching the SCTE-35 event's own 54000-tick timestamp below) - each segment would
+  // naturally keep running to the full 90000 ticks with no intervention.
+  for (auto* input : {video_input.get(), audio_input.get()}) {
+    ASSERT_OK(input->Dispatch(
+        StreamData::FromStreamInfo(kStreamIndex, GetVideoStreamInfo(kTimescale))));
+    for (int64_t start : {0, 18000, 36000}) {
+      ASSERT_OK(input->Dispatch(
+          StreamData::FromMediaSample(kStreamIndex, GetMediaSample(start, 18000, true))));
+    }
+  }
+  video_output->Clear();
+  audio_output->Clear();
+
+  // A single live SCTE-35 event arrives on the video stream's own input, at 0.6s (54000 ticks at
+  // 90kHz) - deliberately not a round multiple of either receiver's own 1s segment_duration_, to
+  // prove both are driven by this timestamp specifically, not by their own periodic grids.
+  EXPECT_CALL(*Output(kVideoStreamIndex), OnProcess(_));  // the passthrough scte35 event itself
+  auto scte35_event =
+      std::make_shared<SCTE35Event>("event-1", /*start_time=*/54000, /*duration=*/1350000);
+  ASSERT_OK(Input(kVideoStreamIndex)
+                ->Dispatch(StreamData::FromScte35Event(kStreamIndex, scte35_event)));
+
+  // Feeding one more sample to each - still well before the natural 90000-tick boundary - should
+  // show a fresh segment starting on BOTH, proving the force landed at 54000 ticks on each
+  // independently rather than waiting for their natural schedule.
+  for (auto* input : {video_input.get(), audio_input.get()}) {
+    ASSERT_OK(input->Dispatch(
+        StreamData::FromMediaSample(kStreamIndex, GetMediaSample(60000, 18000, true))));
+    ASSERT_OK(input->FlushAllDownstreams());
+  }
+
+  for (auto* output : {video_output.get(), audio_output.get()}) {
+    bool found_forced_segment = false;
+    for (const auto& data : output->Cache()) {
+      if (data->stream_data_type == StreamDataType::kSegmentInfo) {
+        const auto& info = data->segment_info;
+        if (info->start_timestamp == 0 && info->duration == 54000) {
+          found_forced_segment = true;
+        }
+        // No natural (unforced) 90000-tick segment should ever appear - that would mean the force
+        // was ignored and this receiver just ran its own regular periodic schedule instead.
+        EXPECT_NE(info->duration, 90000);
+      }
+    }
+    EXPECT_TRUE(found_forced_segment)
+        << "expected a segment forced short (start=0, duration=54000) by the live SCTE-35 event's "
+        << "own timestamp, on every registered immediate receiver";
+  }
 }
 
 }  // namespace media
