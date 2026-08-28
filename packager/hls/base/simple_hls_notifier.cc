@@ -316,9 +316,13 @@ std::unique_ptr<MediaPlaylist> MediaPlaylistFactory::Create(
 SimpleHlsNotifier::SimpleHlsNotifier(const HlsParams& hls_params)
     : HlsNotifier(hls_params),
       media_playlist_factory_(new MediaPlaylistFactory()) {
-  if (hls_params.add_program_date_time) {
-    reference_time_ = absl::Now();
-  }
+  // Always captured, not just when add_program_date_time is set: MediaPlaylist's own
+  // start_time_in_HH_MM_SS_MMM calls (DATERANGE START-DATE, the SCTE-35 cue's own embedded
+  // PROGRAM-DATE-TIME) need this real wall-clock anchor unconditionally, regardless of whether
+  // the standalone #EXT-X-PROGRAM-DATE-TIME tag feature itself is enabled - without it those PTS
+  // values get misread as milliseconds since the Unix epoch instead of since this real instant,
+  // producing a nonsensical ~1970-01-01 date.
+  reference_time_ = absl::Now();
   const auto master_playlist_path =
       std::filesystem::u8path(hls_params.master_playlist_output);
   master_playlist_dir_ = master_playlist_path.parent_path().string();

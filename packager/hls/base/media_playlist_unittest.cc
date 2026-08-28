@@ -1434,5 +1434,49 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
 }
 
+// Regression test for a live in-band SCTE-35 cue-out's own DATERANGE START-DATE and embedded
+// PROGRAM-DATE-TIME using the real wall-clock reference time (via SetReferenceTime, the same
+// mechanism the ProgramDateTime tests above use) instead of misreading the SCTE-35 event's raw PTS
+// ticks as milliseconds since the Unix epoch - which previously produced a START-DATE of
+// "1970-01-01T00:00:05.000Z" for an event 5 seconds into the stream, instead of 5 seconds after
+// the real reference time. Deliberately does NOT set add_program_date_time (AddXCueOut's own
+// DATERANGE is unconditional, independent of that flag - see media_playlist.cc's own
+// AddXCueOut/AddSegmentInfoEntry).
+TEST_F(MediaPlaylistMultiSegmentTest, Scte35CueOutUsesRealReferenceTime) {
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  // A cue-out 5 seconds into the stream, declaring a 10 second break.
+  media_playlist_->AddScte35Event(5 * kTimeScale, 10 * kTimeScale, "", 42);
+  media_playlist_->AddSegment("file1.ts", 5 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-DATERANGE:ID=\"42\",CLASS=\"com.apple.hls.interstitial\","
+      "START-DATE=\"2025-10-12T14:00:05.000Z\",DURATION=10.000,"
+      "X-RESUME-OFFSET=0.000,X-ASSET-URI=\"?duration=10\","
+      "X-TIMELINE-OCCUPIES=\"RANGE\"\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:05.000Z\n"
+      "#EXT-X-CUE-OUT:10.000\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
 }  // namespace hls
 }  // namespace shaka
