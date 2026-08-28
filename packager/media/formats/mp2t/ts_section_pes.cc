@@ -173,6 +173,29 @@ bool TsSectionPes::Emit(bool emit_for_unknown_size) {
   if (raw_pes_size < 6)
     return true;
 
+  // A raw section (e.g. live in-band SCTE-35, sent by the encoder without real PES
+  // framing - see ParseInternal's own "not a real PES packet" branch below) carries no
+  // PES_packet_length field at all: bytes [4:6] are just whatever that section's own
+  // fixed header happens to contain (for SCTE-35, protocol_version=0 followed by a byte
+  // whose relevant bits are also 0, so this always read as pes_packet_length=0).
+  // Applying the PES-specific "size unknown, wait for the next packet to force-emit"
+  // rule below to that misread field meant every such section sat queued until the
+  // NEXT packet on this PID arrived with payload_unit_start_indicator=1 - for a sparse
+  // stream like live in-band SCTE-35, that could be many seconds (or, for the very last
+  // event of a session, forever). A single TS packet already carries this section's own
+  // complete, explicitly-length-prefixed payload, so there is nothing to wait for -
+  // detect this case up front and emit immediately, bypassing the PES framing rules
+  // entirely.
+  const bool is_real_pes =
+      raw_pes_size >= 3 &&
+      ((static_cast<int>(raw_pes[0]) << 16) | (static_cast<int>(raw_pes[1]) << 8) |
+       static_cast<int>(raw_pes[2])) == kPesStartCode;
+  if (!is_real_pes) {
+    bool parse_result = ParseInternal(raw_pes, raw_pes_size);
+    ResetPesState();
+    return parse_result;
+  }
+
   // Check whether we have enough data to start parsing.
   int pes_packet_length =
       (static_cast<int>(raw_pes[4]) << 8) | (static_cast<int>(raw_pes[5]));
