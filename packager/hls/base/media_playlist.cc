@@ -982,36 +982,18 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
 
   if (hls_params_.add_program_date_time &&
       reference_time_ != absl::InfinitePast()) {
-    // See if we need to add a program date time tag. It is added before the
-    // first segment, and after every discontinuity.
-    bool is_first_segment = true;
-    bool is_discontinuity = false;
-    if (!entries_.empty()) {
-      for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
-        if ((*it)->type() == HlsEntry::EntryType::kExtInf) {
-          is_first_segment = false;
-          break;
-        }
-      }
-
-      const auto& last = *entries_.back();
-      if (last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
-        is_discontinuity = true;
-      } else if (entries_.size() >= 2) {
-        const auto& second_last = **std::prev(entries_.cend(), 2);
-        if (last.type() == HlsEntry::EntryType::kExtKey &&
-            second_last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
-          is_discontinuity = true;
-        }
-      }
-    }
-
-    if (is_first_segment || is_discontinuity) {
-      const absl::Time program_time =
-          reference_time_ +
-          absl::Seconds(static_cast<double>(start_time) / time_scale_);
-      entries_.emplace_back(new ProgramDateTimeEntry(program_time));
-    }
+    // Every segment gets its own PROGRAM-DATE-TIME tag, not just the first one and ones after a
+    // discontinuity - standard practice for LIVE HLS specifically (unlike VOD, where a player
+    // already has the full segment history and can just sum EXTINF durations from a single
+    // anchor): a player joining mid-stream, or a client re-fetching a sliding-window playlist
+    // after any segments have rolled off, gets each visible segment's own absolute wall-clock
+    // time directly, without needing history that may no longer be in the playlist at all - see
+    // this file's own doc comment on this same problem for SCTE-35 DATERANGE tags scrolling out
+    // of the live window with nothing left to reconstruct their real time from.
+    const absl::Time program_time =
+        reference_time_ +
+        absl::Seconds(static_cast<double>(start_time) / time_scale_);
+    entries_.emplace_back(new ProgramDateTimeEntry(program_time));
   }
 
   entries_.emplace_back(new SegmentInfoEntry(

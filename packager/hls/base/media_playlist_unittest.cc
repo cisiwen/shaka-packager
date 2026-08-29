@@ -1425,6 +1425,53 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
       "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:25.000Z\n"
       "#EXTINF:10.000,\n"
       "file2.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:25.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file3.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Verifies every segment gets its own PROGRAM-DATE-TIME tag (not just the first one and ones
+// after a discontinuity) - each at reference_time plus that specific segment's own elapsed
+// offset, so a player looking at any single visible segment (e.g. after others have rolled off a
+// live sliding-window playlist) always has its own real wall-clock anchor with nothing to
+// reconstruct from history that may no longer be present.
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeOnEverySegment) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  media_playlist_->AddSegment("file3.ts", 20 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:10.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:20.000Z\n"
       "#EXTINF:10.000,\n"
       "file3.ts\n"
       "#EXT-X-ENDLIST\n";
