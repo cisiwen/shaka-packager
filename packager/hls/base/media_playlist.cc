@@ -981,7 +981,9 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
   }
 
   if (hls_params_.add_program_date_time &&
-      reference_time_ != absl::InfinitePast()) {
+      reference_time_ != absl::InfinitePast() &&
+      (entries_.empty() ||
+       entries_.back()->type() != HlsEntry::EntryType::kExtCueOut)) {
     // Every segment gets its own PROGRAM-DATE-TIME tag, not just the first one and ones after a
     // discontinuity - standard practice for LIVE HLS specifically (unlike VOD, where a player
     // already has the full segment history and can just sum EXTINF durations from a single
@@ -990,6 +992,11 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     // time directly, without needing history that may no longer be in the playlist at all - see
     // this file's own doc comment on this same problem for SCTE-35 DATERANGE tags scrolling out
     // of the live window with nothing left to reconstruct their real time from.
+    //
+    // Skipped when a CUE-OUT was just added for this exact segment (entries_.back() check above):
+    // XCueOut::ToString() already embeds its own PROGRAM-DATE-TIME at this same instant (see
+    // AddXCueOut/start_time_in_HH_MM_SS_MMM) - adding a second, identical tag right after it would
+    // be pure duplication.
     const absl::Time program_time =
         reference_time_ +
         absl::Seconds(static_cast<double>(start_time) / time_scale_);
