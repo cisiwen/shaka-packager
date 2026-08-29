@@ -1141,7 +1141,18 @@ void MediaPlaylist::SlideWindow() {
      else if (entry_type == HlsEntry::EntryType::kExtPlacementOpportunity || entry_type == HlsEntry::EntryType::kExtCueCont) {
         //do smth with Cues
 
-      } else { 
+      } else if (entry_type == HlsEntry::EntryType::kProgramDateTime) {
+      // Not a segment of its own - just metadata attached to whichever segment follows it (see
+      // AddSegmentInfoEntry's own per-segment PROGRAM-DATE-TIME logic). Falling through to the
+      // final `else` below (which assumes every remaining entry type is kExtInf) would
+      // reinterpret_cast this ProgramDateTimeEntry as a SegmentInfoEntry and read its
+      // duration_seconds() from the wrong memory layout entirely - undefined behavior that
+      // corrupted current_buffer_depth_ with garbage values, confirmed as the cause of a real
+      // deployed session's sliding window growing without bound instead of evicting old segments,
+      // once every segment started getting its own tag instead of just the first one. Skip it
+      // entirely: it doesn't count against the time-shift buffer and must never trigger the break
+      // below on its own.
+    } else {
       DCHECK_EQ(static_cast<int>(entry_type),
                 static_cast<int>(HlsEntry::EntryType::kExtInf));
 

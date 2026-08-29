@@ -875,6 +875,57 @@ TEST_F(LiveMediaPlaylistTest, TimeShifted) {
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
 }
 
+// Regression test for a real deployed-session bug: SlideWindow()'s eviction scan assumed every
+// entry it hadn't already special-cased (kExtKey/kExtDiscontinuity/kExtCueOut/kExtCueIn/
+// kExtPlacementOpportunity/kExtCueCont) was a kExtInf segment, and reinterpret_cast it as one
+// unconditionally. Once every segment started getting its own ProgramDateTimeEntry (a type that
+// scan never accounted for), that cast silently read garbage memory as a "duration", corrupting
+// current_buffer_depth_ - confirmed against a real session where the sliding window stopped
+// evicting old segments entirely once every-segment tagging landed. This is the exact same
+// scenario as the TimeShifted test above, just with --add_program_date_time on: same segments,
+// same expected eviction (file1 dropped, MEDIA-SEQUENCE:1) - if the fix regresses, this either
+// crashes/UBSan-flags in a sanitized build, or the resulting MEDIA-SEQUENCE/segment list silently
+// stops matching TimeShifted's own untagged behavior.
+TEST_F(LiveMediaPlaylistTest, TimeShiftedWithProgramDateTime) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 20 * kTimeScale,
+                              kZeroByteOffset, 2 * kMBytes);
+  media_playlist_->AddSegment("file3.ts", 30 * kTimeScale, 20 * kTimeScale,
+                              kZeroByteOffset, 2 * kMBytes);
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, false));
+  std::string content;
+  ASSERT_TRUE(File::ReadFileToString(kMemoryFilePath, &content));
+
+  // The core assertion: file1 was evicted (matching TimeShifted's own untagged behavior exactly -
+  // this is what silently broke without the SlideWindow fix), and both remaining segments are
+  // still present and intact, with no crash and no corrupted/garbage buffer-depth bookkeeping
+  // preventing this eviction from happening.
+  EXPECT_THAT(content, ::testing::HasSubstr("#EXT-X-MEDIA-SEQUENCE:1\n"));
+  EXPECT_THAT(content, ::testing::Not(::testing::HasSubstr("file1.ts")));
+  EXPECT_THAT(content, ::testing::HasSubstr("file2.ts"));
+  EXPECT_THAT(content, ::testing::HasSubstr("file3.ts"));
+  // file3's own tag must still be correctly computed (reference_time + its own real 30s offset,
+  // matching TimeShifted's own segment start_time for file3) - proving the surrounding
+  // per-segment PROGRAM-DATE-TIME logic (not just the SlideWindow fix in isolation) still works
+  // correctly once eviction has actually run.
+  EXPECT_THAT(content, ::testing::HasSubstr(
+                            "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:30.000Z\n"));
+}
+
 TEST_F(LiveMediaPlaylistTest, TimeShiftedWithEncryptionInfo) {
   ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
 
