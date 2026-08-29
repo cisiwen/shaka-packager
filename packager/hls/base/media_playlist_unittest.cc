@@ -1425,7 +1425,12 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
       "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:25.000Z\n"
       "#EXTINF:10.000,\n"
       "file2.ts\n"
-      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:25.000Z\n"
+      // file3 shares file2's own start_time (25 * kTimeScale), but its tag is file2's tag plus
+      // file2's own EXTINF duration (14:00:25 + 10s = 14:00:35) - the cumulative clock, not a
+      // fresh PTS-based computation from that shared start_time - since file3 isn't the first
+      // segment or right after a discontinuity. This is exactly consistent with what a player
+      // computes by summing EXTINF durations forward from file2's own tag.
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:35.000Z\n"
       "#EXTINF:10.000,\n"
       "file3.ts\n"
       "#EXT-X-ENDLIST\n";
@@ -1436,10 +1441,12 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
 }
 
 // Verifies every segment gets its own PROGRAM-DATE-TIME tag (not just the first one and ones
-// after a discontinuity) - each at reference_time plus that specific segment's own elapsed
-// offset, so a player looking at any single visible segment (e.g. after others have rolled off a
-// live sliding-window playlist) always has its own real wall-clock anchor with nothing to
-// reconstruct from history that may no longer be present.
+// after a discontinuity), so a player looking at any single visible segment (e.g. after others
+// have rolled off a live sliding-window playlist) always has its own real wall-clock anchor with
+// nothing to reconstruct from history that may no longer be present. These 3 segments have no PTS
+// gaps between them, so the cumulative (previous tag + previous duration) and raw-PTS-based
+// values coincide exactly - see ProgramDateTimeIgnoresPtsGapWithoutDiscontinuity below for the
+// case where they differ.
 TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeOnEverySegment) {
   mutable_hls_params()->add_program_date_time = true;
 
@@ -1474,6 +1481,54 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeOnEverySegment) {
       "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:20.000Z\n"
       "#EXTINF:10.000,\n"
       "file3.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Regression test for exactly the real-world case that motivated the cumulative-clock design:
+// ChunkingHandler can discard samples between a forced segment boundary (e.g. a live SCTE-35 cue)
+// and the next real keyframe, since SAP alignment requires waiting for one - producing a PTS gap
+// with no accompanying #EXT-X-DISCONTINUITY (confirmed against a real deployed session: segment 5
+// ended at tick 1022400, segment 6 started at 1170000 - a 1.64s gap, no discontinuity tag).
+// file2 here simulates that: it starts 2 seconds after file1's own 10-second declared duration
+// would put it, without any discontinuity. Its PROGRAM-DATE-TIME must still be file1's tag plus
+// file1's own EXTINF duration (14:00:00 + 10s = 14:00:10) - exactly what a player computes from
+// EXTINF summation - NOT a fresh 14:00:12 computed from file2's own (gapped) raw PTS, which would
+// silently disagree with that same player's own math.
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeIgnoresPtsGapWithoutDiscontinuity) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  // Starts at 12s, not the 10s file1's own duration would suggest - a 2s PTS gap, no
+  // discontinuity tag inserted for it.
+  media_playlist_->AddSegment("file2.ts", 12 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:10.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
       "#EXT-X-ENDLIST\n";
 
   const char kMemoryFilePath[] = "memory://media.m3u8";

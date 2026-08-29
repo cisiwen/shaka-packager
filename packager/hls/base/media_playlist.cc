@@ -980,10 +980,7 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     }
   }
 
-  if (hls_params_.add_program_date_time &&
-      reference_time_ != absl::InfinitePast() &&
-      (entries_.empty() ||
-       entries_.back()->type() != HlsEntry::EntryType::kExtCueOut)) {
+  if (hls_params_.add_program_date_time && reference_time_ != absl::InfinitePast()) {
     // Every segment gets its own PROGRAM-DATE-TIME tag, not just the first one and ones after a
     // discontinuity - standard practice for LIVE HLS specifically (unlike VOD, where a player
     // already has the full segment history and can just sum EXTINF durations from a single
@@ -993,14 +990,57 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     // this file's own doc comment on this same problem for SCTE-35 DATERANGE tags scrolling out
     // of the live window with nothing left to reconstruct their real time from.
     //
-    // Skipped when a CUE-OUT was just added for this exact segment (entries_.back() check above):
-    // XCueOut::ToString() already embeds its own PROGRAM-DATE-TIME at this same instant (see
-    // AddXCueOut/start_time_in_HH_MM_SS_MMM) - adding a second, identical tag right after it would
-    // be pure duplication.
-    const absl::Time program_time =
-        reference_time_ +
-        absl::Seconds(static_cast<double>(start_time) / time_scale_);
-    entries_.emplace_back(new ProgramDateTimeEntry(program_time));
+    // Deliberately NOT computed as reference_time_ + start_time/time_scale_ (start_time's own raw
+    // PTS) for every segment: ChunkingHandler can silently drop samples between a forced SCTE-35
+    // cut and the next real keyframe (SAP alignment requires waiting for one - see
+    // ChunkingHandler::OnMediaSample's own "discard samples before segment start" comment), which
+    // showed up in a real test as a ~1.6s PTS gap with no accompanying #EXT-X-DISCONTINUITY. A
+    // per-segment tag computed from raw PTS would "jump" across that gap even though nothing
+    // marks it as a discontinuity - inconsistent with what a player computes for the SAME segment
+    // by just summing preceding EXTINF durations from the previous tag, per the HLS spec's own
+    // model. Instead, every segment's tag is the PREVIOUS one plus its own EXTINF duration -
+    // always exactly consistent with EXTINF summation - and only resyncs to the real PTS-derived
+    // wall-clock time at the two points that legitimately warrant it: the very first segment, and
+    // right after a genuine #EXT-X-DISCONTINUITY (an real, structural stream break, unlike an
+    // SCTE-35 cue point, which never gets one).
+    bool is_first_segment = true;
+    bool is_discontinuity = false;
+    if (!entries_.empty()) {
+      for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
+        if ((*it)->type() == HlsEntry::EntryType::kExtInf) {
+          is_first_segment = false;
+          break;
+        }
+      }
+
+      const auto& last = *entries_.back();
+      if (last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
+        is_discontinuity = true;
+      } else if (entries_.size() >= 2) {
+        const auto& second_last = **std::prev(entries_.cend(), 2);
+        if (last.type() == HlsEntry::EntryType::kExtKey &&
+            second_last.type() == HlsEntry::EntryType::kExtDiscontinuity) {
+          is_discontinuity = true;
+        }
+      }
+    }
+
+    if (is_first_segment || is_discontinuity ||
+        next_program_date_time_ == absl::InfinitePast()) {
+      next_program_date_time_ =
+          reference_time_ +
+          absl::Seconds(static_cast<double>(start_time) / time_scale_);
+    }
+
+    // Skipped only for the one segment a CUE-OUT was just added to (not the running clock itself,
+    // which still advances below regardless): XCueOut::ToString() already embeds its own
+    // PROGRAM-DATE-TIME at this same instant (see AddXCueOut/start_time_in_HH_MM_SS_MMM), so
+    // adding a second, identical tag right after it would be pure duplication.
+    if (entries_.empty() ||
+        entries_.back()->type() != HlsEntry::EntryType::kExtCueOut) {
+      entries_.emplace_back(new ProgramDateTimeEntry(next_program_date_time_));
+    }
+    next_program_date_time_ += absl::Seconds(segment_duration_seconds);
   }
 
   entries_.emplace_back(new SegmentInfoEntry(
