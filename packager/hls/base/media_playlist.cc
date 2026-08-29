@@ -1025,19 +1025,30 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
       }
     }
 
-    if (is_first_segment || is_discontinuity ||
+    const bool cue_out_just_added =
+        !entries_.empty() &&
+        entries_.back()->type() == HlsEntry::EntryType::kExtCueOut;
+
+    if (is_first_segment || is_discontinuity || cue_out_just_added ||
         next_program_date_time_ == absl::InfinitePast()) {
+      // Resync to the real PTS-derived time. For is_first_segment/is_discontinuity/uninitialized,
+      // this is the same resync the cumulative design always needed. For cue_out_just_added: a
+      // CUE-OUT landing on this exact segment already forced its own embedded PROGRAM-DATE-TIME
+      // to be printed immediately before it (see AddXCueOut/start_time_in_HH_MM_SS_MMM, computed
+      // from this identical start_time), which a player reads regardless of whether this code
+      // also emits its own tag below. The cumulative clock MUST align to that already-printed
+      // value here, not silently keep advancing from whatever it was tracking before the cue -
+      // otherwise the very next segment's own cumulative tag would disagree with what a player
+      // computes from the CUE-OUT segment's own printed tag plus its own EXTINF duration.
       next_program_date_time_ =
           reference_time_ +
           absl::Seconds(static_cast<double>(start_time) / time_scale_);
     }
 
-    // Skipped only for the one segment a CUE-OUT was just added to (not the running clock itself,
-    // which still advances below regardless): XCueOut::ToString() already embeds its own
-    // PROGRAM-DATE-TIME at this same instant (see AddXCueOut/start_time_in_HH_MM_SS_MMM), so
-    // adding a second, identical tag right after it would be pure duplication.
-    if (entries_.empty() ||
-        entries_.back()->type() != HlsEntry::EntryType::kExtCueOut) {
+    // Don't print a second, identical tag right after the CUE-OUT's own one (XCueOut::ToString()
+    // already embeds it - see above) - the resync just above still keeps the running clock
+    // correctly aligned to it either way.
+    if (!cue_out_just_added) {
       entries_.emplace_back(new ProgramDateTimeEntry(next_program_date_time_));
     }
     next_program_date_time_ += absl::Seconds(segment_duration_seconds);
