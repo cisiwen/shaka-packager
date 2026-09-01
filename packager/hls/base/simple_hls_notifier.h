@@ -12,7 +12,9 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <absl/synchronization/mutex.h>
@@ -150,6 +152,27 @@ class SimpleHlsNotifier : public HlsNotifier {
   std::list<MediaPlaylist*> media_playlists_;
 
   uint32_t sequence_number_ = 0;
+
+  // De-dupes SCTE-35 notifications by (splice_event_id, is_cue_out) --
+  // tsduck-packager.sh runs THREE independent `packager` inputs off the same
+  // relayed UDP stream (video/audio/scte35 - see that script's own comment:
+  // "each stream=X input independently parses the full MPEG-TS stream"), and
+  // each of those three Mp2tMediaParser instances discovers and parses the
+  // shared SCTE-35 PID regardless of which elementary stream it was actually
+  // configured for, so the SAME real splice command gets independently
+  // detected and reported (via each instance's own HlsNotifyMuxerListener)
+  // up to three times, each stamped with that instance's own locally-observed
+  // timestamp. Without this, NotifySCTE35Event's broadcast-to-every-playlist
+  // loop pushes near-duplicate events (same splice_event_id, timestamps a
+  // few tens of ms apart) into every track's queue, and different tracks can
+  // each drain a different one - confirmed via a real HAR capture where the
+  // video and audio playlists' EXT-X-DATERANGE START-DATE for the identical
+  // event disagreed by 75ms. Keeping only the first-seen report per (id,
+  // cue-out/cue-in) pair guarantees every representation stamps the same
+  // canonical time. Keyed on is_cue_out (duration >= 0), not just the id,
+  // since a cue-out and its later matching cue-in share the same
+  // splice_event_id and must NOT be deduped against each other.
+  std::set<std::pair<uint32_t, bool>> seen_scte35_events_;
 
   absl::Mutex lock_;
   absl::Time reference_time_ = absl::InfinitePast();
