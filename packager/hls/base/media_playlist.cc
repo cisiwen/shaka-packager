@@ -1154,6 +1154,28 @@ void MediaPlaylist::SlideWindow() {
   // Keep track of entry types so we know if it is consecutive key entries.
   HlsEntry::EntryType prev_entry_type = HlsEntry::EntryType::kExtInf;
 
+  // CUE-OUT/CUE-IN tags are always emitted immediately before the one real
+  // segment they describe (see AddXCueOut/AddSegmentInfoEntry's insertion
+  // order) - they have no independent lifetime of their own, unlike KEY
+  // entries above. So their fate must be tied to that segment's own
+  // eviction decision, not to merely being scanned over: this loop can
+  // evict more than one segment per call (whenever variable segment
+  // durations let current_buffer_depth_ overshoot the threshold by more
+  // than one segment's worth), and it used to apply a tag's effect (stash
+  // into previous_Scte35_, or clear it) and drop the tag the instant the
+  // scan passed over it - even when the segment right after it went on to
+  // survive. A live capture confirmed this: the exact segment a real
+  // #EXT-X-CUE-OUT was attached to stayed in the window, but the tag itself
+  // was evicted a poll earlier, so that segment retroactively appeared to
+  // downgrade from "starts the break" (CUE-OUT) to "0s into the break"
+  // (WriteToFile()'s synthetic CUE-CONT fallback) between two manifest
+  // reads of the very same segment - not a real event, just an artifact of
+  // the tag and its segment being evicted independently. Held here until
+  // the very next real segment's own eviction decision is known, then
+  // either applied for real (segment evicted too) or reinserted unchanged
+  // immediately before that segment (segment survives).
+  std::list<std::unique_ptr<HlsEntry>> pending_cue_tags;
+
   std::list<std::unique_ptr<HlsEntry>>::iterator last = entries_.begin();
   for (; last != entries_.end(); ++last) {
     HlsEntry::EntryType entry_type = last->get()->type();
@@ -1163,21 +1185,10 @@ void MediaPlaylist::SlideWindow() {
       ext_x_keys.push_back(std::move(*last));
     } else if (entry_type == HlsEntry::EntryType::kExtDiscontinuity) {
       ++discontinuity_sequence_number_;
-    } else if (entry_type == HlsEntry::EntryType::kExtCueOut ){
-      const XCueOut& xcue =
-          *reinterpret_cast<XCueOut*>(last->get());
-      // xcue.timestamp_ (real PTS-domain start time) replaces the old
-      // hardcoded placeholder `1` here - WriteToFile()'s fallback needs a
-      // real value to tell whether this break's own DURATION has actually
-      // elapsed once this entry (and the segment(s) it was attached to) have
-      // scrolled out of the live window, the same way real EXTINF segments
-      // get a genuine elapsed-time check before SlideWindow evicts them
-      // (previous_Scte35_ had no such check at all before this - it emitted
-      // a bare DATERANGE, with no PROGRAM-DATE-TIME or CUE-CONT, until an
-      // actual matching cue-in arrived, however long that took).
-      previous_Scte35_ = {xcue.id_, xcue.timestamp_, static_cast<int64_t>(xcue.duration_seconds_*time_scale_), xcue.scte_data_, xcue.date_time_}; //when cueout goes out of range then need to add extxdaterange header
-    } else if (entry_type == HlsEntry::EntryType::kExtCueIn ){
-      previous_Scte35_ = {0, 0, 0, "", ""}; //when cuein goes out of range then need to remove extxdaterange header
+    } else if (entry_type == HlsEntry::EntryType::kExtCueOut ||
+               entry_type == HlsEntry::EntryType::kExtCueIn) {
+      // Don't decide yet - see pending_cue_tags' own comment above.
+      pending_cue_tags.push_back(std::move(*last));
     }
      else if (entry_type == HlsEntry::EntryType::kExtPlacementOpportunity || entry_type == HlsEntry::EntryType::kExtCueCont) {
         //do smth with Cues
@@ -1204,8 +1215,41 @@ void MediaPlaylist::SlideWindow() {
       const bool segment_within_time_shift_buffer =
           current_buffer_depth_ - segment_info.duration_seconds() <
           hls_params_.time_shift_buffer_depth;
-      if (segment_within_time_shift_buffer)
+      if (segment_within_time_shift_buffer) {
+        // This segment survives, so does whatever CUE-OUT/CUE-IN tag was
+        // announcing it - see pending_cue_tags' own comment above. Leave
+        // pending_cue_tags untouched; it gets reinserted right before this
+        // same segment after the loop, below.
         break;
+      }
+      // This segment is actually leaving the window - so is any pending
+      // CUE-OUT/CUE-IN tag, since it was describing this exact segment (see
+      // pending_cue_tags' own comment above). Apply its real effect now,
+      // exactly as SlideWindow used to do the instant it scanned past the
+      // tag itself.
+      for (auto& tag : pending_cue_tags) {
+        if (tag->type() == HlsEntry::EntryType::kExtCueOut) {
+          const XCueOut& xcue = *reinterpret_cast<XCueOut*>(tag.get());
+          // xcue.timestamp_ (real PTS-domain start time) replaces the old
+          // hardcoded placeholder `1` here - WriteToFile()'s fallback needs
+          // a real value to tell whether this break's own DURATION has
+          // actually elapsed once this entry (and the segment it was
+          // attached to) have scrolled out of the live window, the same way
+          // real EXTINF segments get a genuine elapsed-time check before
+          // SlideWindow evicts them (previous_Scte35_ had no such check at
+          // all before this - it emitted a bare DATERANGE, with no
+          // PROGRAM-DATE-TIME or CUE-CONT, until an actual matching cue-in
+          // arrived, however long that took).
+          previous_Scte35_ = {xcue.id_, xcue.timestamp_,
+                              static_cast<int64_t>(xcue.duration_seconds_ *
+                                                    time_scale_),
+                              xcue.scte_data_, xcue.date_time_};
+        } else {  // kExtCueIn
+          previous_Scte35_ = {0, 0, 0, "", ""};
+        }
+      }
+      pending_cue_tags.clear();
+
       current_buffer_depth_ -= segment_info.duration_seconds();
       RemoveOldSegment(segment_info.start_time());
       media_sequence_number_++;
@@ -1216,6 +1260,13 @@ void MediaPlaylist::SlideWindow() {
   // Add key entries back.
   entries_.insert(entries_.begin(), std::make_move_iterator(ext_x_keys.begin()),
                   std::make_move_iterator(ext_x_keys.end()));
+  // Any CUE-OUT/CUE-IN tag still held here was never actually evicted (see
+  // pending_cue_tags' own comment above) - put it back immediately before
+  // whichever segment survived (now at entries_.begin()), or at the front
+  // of an otherwise-empty list if every segment was evicted.
+  entries_.insert(entries_.begin(),
+                  std::make_move_iterator(pending_cue_tags.begin()),
+                  std::make_move_iterator(pending_cue_tags.end()));
 }
 
 void MediaPlaylist::RemoveOldSegment(int64_t start_time) {
