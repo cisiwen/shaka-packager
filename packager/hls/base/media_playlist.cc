@@ -425,7 +425,7 @@ std::string EncryptionInfoEntry::ToString(std::string tag_name) {
 
 class XCueOut : public HlsEntry {
  public:
-  XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url);
+  XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url, int64_t timestamp);
 
   std::string ToString() override;
 
@@ -435,19 +435,29 @@ class XCueOut : public HlsEntry {
   std::string scte_data_;
   std::string advert_url_;
   uint32_t id_;
+  // Raw PTS-domain timestamp (time_scale_ units) this break started at - kept
+  // alongside the already-formatted date_time_ string so SlideWindow() can
+  // hand a real value to previous_Scte35_.timestamp instead of the placeholder
+  // constant it used before (see previous_Scte35_'s own field for why that
+  // matters: WriteToFile()'s fallback needs this to tell whether the break's
+  // own DURATION has actually elapsed once this entry has scrolled out of the
+  // window, the same way real segments get a real elapsed-time check before
+  // SlideWindow() evicts them).
+  int64_t timestamp_;
   private:
   XCueOut(const XCueOut&) = delete;
   XCueOut& operator=(const XCueOut&) =
       delete;
 };
 
-XCueOut::XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url)
+XCueOut::XCueOut(float duration_seconds, uint32_t id, std::string scte_data, std::string date_time, std::string advert_url, int64_t timestamp)
     : HlsEntry(HlsEntry::EntryType::kExtCueOut),
     duration_seconds_(duration_seconds),
     date_time_(date_time),
     scte_data_(scte_data),
     advert_url_(advert_url),
-    id_(id) {};
+    id_(id),
+    timestamp_(timestamp) {};
 
 std::string XCueOut::ToString() {
   // #EXT-X-DATERANGE:ID="999",START-DATE="2018-08-22T21:54:00.079Z",PLANNED-DURATION=30.000,SCTE35-OUT=0xFC302500000000000000FFF01405000003E77FEFFE0011FB9EFE002932E00001010100004D192A59
@@ -701,7 +711,7 @@ void MediaPlaylist::AddPlacementOpportunity() {
 
 void MediaPlaylist::AddXCueOut(Scte35 scte35) {
   LOG(INFO)<<"HLS: XCueOut "<<static_cast< float >(scte35.duration)/time_scale_<<std::endl;
-  entries_.emplace_back(new XCueOut(static_cast< float >(scte35.duration)/time_scale_, scte35.id, scte35.cue_data, start_time_in_HH_MM_SS_MMM(scte35.timestamp + hls_params_.pts_time_offset, reference_time_), hls_params_.advert_url));
+  entries_.emplace_back(new XCueOut(static_cast< float >(scte35.duration)/time_scale_, scte35.id, scte35.cue_data, start_time_in_HH_MM_SS_MMM(scte35.timestamp + hls_params_.pts_time_offset, reference_time_), hls_params_.advert_url, scte35.timestamp));
 }
 
 void MediaPlaylist::AddXCueCont(int64_t duration, float passed) {
@@ -762,10 +772,32 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path,
 
     LOG(INFO)<<"HLS header program datetime "<<start_time<< " offset: "<<hls_params_.pts_time_offset<<" "<<header_program_datetime<<std::endl;
   //for (const auto& entry : entries_)
-/*  if (previous_Scte35_.duration > 0  && previous_Scte35_.timestamp <= start_time){
-    if(previous_Scte35_.timestamp <= static_cast<uint64_t>(start_time) + hls_params_.time_shift_buffer_depth)*/
-  if (previous_Scte35_.duration > 0 ) {  
-     content += absl::StrFormat("#EXT-X-DATERANGE:ID=\"%d\",CLASS=\"com.apple.hls.interstitial\",START-DATE=\"%s\",DURATION=%.3f,X-RESUME-OFFSET=%.3f,X-ASSET-URI=\"%s?duration=%d\",X-TIMELINE-OCCUPIES=\"RANGE\"\n",previous_Scte35_.id,previous_Scte35_.datetime,previous_Scte35_.duration/time_scale_,0,hls_params_.advert_url,(int64_t)previous_Scte35_.duration/time_scale_);
+  // Once the XCueOut entry itself (and the segment(s) it was attached to)
+  // has scrolled out of the live window, SlideWindow() stashes its data here
+  // so the interstitial can keep being declared - but this used to run with
+  // NO time check at all: it kept emitting a bare DATERANGE (no
+  // PROGRAM-DATE-TIME, no continuation cue) forever, until some later
+  // matching cue-in happened to arrive, however long that took, or even
+  // indefinitely if one never did. Two fixes:
+  //  1. Auto-expire once the break's own declared DURATION has genuinely
+  //     elapsed (mirrors the existing "declared duration elapsed, no cue-in
+  //     seen" auto-return fallback already used above for current_Scte35_,
+  //     applied here for the already-evicted case too) - otherwise a break
+  //     without an explicit return command would advertise itself forever.
+  //  2. While still within DURATION, emit PROGRAM-DATE-TIME and a proper
+  //     #EXT-X-CUE-CONT (not a repeated #EXT-X-CUE-OUT, which would wrongly
+  //     signal a brand-new break starting on every reload) - matching what a
+  //     segment still inside the live window already gets from AddXCueCont,
+  //     so a legacy SCTE-35 consumer (this project's own SSAI stitching
+  //     included) sees a consistent signal for the break's entire duration
+  //     instead of it silently degrading a few segments in.
+  if (previous_Scte35_.duration > 0) {
+    const int64_t elapsed_units = start_time - previous_Scte35_.timestamp;
+    if (elapsed_units >= previous_Scte35_.duration) {
+      previous_Scte35_ = {0, 0, 0, "", ""};
+    } else {
+      content += absl::StrFormat("#EXT-X-DATERANGE:ID=\"%d\",CLASS=\"com.apple.hls.interstitial\",START-DATE=\"%s\",DURATION=%.3f,X-RESUME-OFFSET=%.3f,X-ASSET-URI=\"%s?duration=%d\",X-TIMELINE-OCCUPIES=\"RANGE\"\n#EXT-X-PROGRAM-DATE-TIME:%s\n#EXT-X-CUE-CONT:%.3f/%.3f\n",previous_Scte35_.id,previous_Scte35_.datetime,previous_Scte35_.duration/time_scale_,0,hls_params_.advert_url,(int64_t)previous_Scte35_.duration/time_scale_,start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset, reference_time_),static_cast<float>(std::max<int64_t>(elapsed_units, 0))/time_scale_,previous_Scte35_.duration/time_scale_);
+    }
   }
 
   for (const auto& entry : entries_)
@@ -1122,6 +1154,28 @@ void MediaPlaylist::SlideWindow() {
   // Keep track of entry types so we know if it is consecutive key entries.
   HlsEntry::EntryType prev_entry_type = HlsEntry::EntryType::kExtInf;
 
+  // CUE-OUT/CUE-IN tags are always emitted immediately before the one real
+  // segment they describe (see AddXCueOut/AddSegmentInfoEntry's insertion
+  // order) - they have no independent lifetime of their own, unlike KEY
+  // entries above. So their fate must be tied to that segment's own
+  // eviction decision, not to merely being scanned over: this loop can
+  // evict more than one segment per call (whenever variable segment
+  // durations let current_buffer_depth_ overshoot the threshold by more
+  // than one segment's worth), and it used to apply a tag's effect (stash
+  // into previous_Scte35_, or clear it) and drop the tag the instant the
+  // scan passed over it - even when the segment right after it went on to
+  // survive. A live capture confirmed this: the exact segment a real
+  // #EXT-X-CUE-OUT was attached to stayed in the window, but the tag itself
+  // was evicted a poll earlier, so that segment retroactively appeared to
+  // downgrade from "starts the break" (CUE-OUT) to "0s into the break"
+  // (WriteToFile()'s synthetic CUE-CONT fallback) between two manifest
+  // reads of the very same segment - not a real event, just an artifact of
+  // the tag and its segment being evicted independently. Held here until
+  // the very next real segment's own eviction decision is known, then
+  // either applied for real (segment evicted too) or reinserted unchanged
+  // immediately before that segment (segment survives).
+  std::list<std::unique_ptr<HlsEntry>> pending_cue_tags;
+
   std::list<std::unique_ptr<HlsEntry>>::iterator last = entries_.begin();
   for (; last != entries_.end(); ++last) {
     HlsEntry::EntryType entry_type = last->get()->type();
@@ -1131,12 +1185,10 @@ void MediaPlaylist::SlideWindow() {
       ext_x_keys.push_back(std::move(*last));
     } else if (entry_type == HlsEntry::EntryType::kExtDiscontinuity) {
       ++discontinuity_sequence_number_;
-    } else if (entry_type == HlsEntry::EntryType::kExtCueOut ){
-      const XCueOut& xcue =
-          *reinterpret_cast<XCueOut*>(last->get());
-      previous_Scte35_ = {xcue.id_, 1, static_cast<int64_t>(xcue.duration_seconds_*time_scale_), xcue.scte_data_, xcue.date_time_}; //when cueout goes out of range then need to add extxdaterange header
-    } else if (entry_type == HlsEntry::EntryType::kExtCueIn ){
-      previous_Scte35_ = {0, 0, 0, "", ""}; //when cuein goes out of range then need to remove extxdaterange header
+    } else if (entry_type == HlsEntry::EntryType::kExtCueOut ||
+               entry_type == HlsEntry::EntryType::kExtCueIn) {
+      // Don't decide yet - see pending_cue_tags' own comment above.
+      pending_cue_tags.push_back(std::move(*last));
     }
      else if (entry_type == HlsEntry::EntryType::kExtPlacementOpportunity || entry_type == HlsEntry::EntryType::kExtCueCont) {
         //do smth with Cues
@@ -1163,8 +1215,41 @@ void MediaPlaylist::SlideWindow() {
       const bool segment_within_time_shift_buffer =
           current_buffer_depth_ - segment_info.duration_seconds() <
           hls_params_.time_shift_buffer_depth;
-      if (segment_within_time_shift_buffer)
+      if (segment_within_time_shift_buffer) {
+        // This segment survives, so does whatever CUE-OUT/CUE-IN tag was
+        // announcing it - see pending_cue_tags' own comment above. Leave
+        // pending_cue_tags untouched; it gets reinserted right before this
+        // same segment after the loop, below.
         break;
+      }
+      // This segment is actually leaving the window - so is any pending
+      // CUE-OUT/CUE-IN tag, since it was describing this exact segment (see
+      // pending_cue_tags' own comment above). Apply its real effect now,
+      // exactly as SlideWindow used to do the instant it scanned past the
+      // tag itself.
+      for (auto& tag : pending_cue_tags) {
+        if (tag->type() == HlsEntry::EntryType::kExtCueOut) {
+          const XCueOut& xcue = *reinterpret_cast<XCueOut*>(tag.get());
+          // xcue.timestamp_ (real PTS-domain start time) replaces the old
+          // hardcoded placeholder `1` here - WriteToFile()'s fallback needs
+          // a real value to tell whether this break's own DURATION has
+          // actually elapsed once this entry (and the segment it was
+          // attached to) have scrolled out of the live window, the same way
+          // real EXTINF segments get a genuine elapsed-time check before
+          // SlideWindow evicts them (previous_Scte35_ had no such check at
+          // all before this - it emitted a bare DATERANGE, with no
+          // PROGRAM-DATE-TIME or CUE-CONT, until an actual matching cue-in
+          // arrived, however long that took).
+          previous_Scte35_ = {xcue.id_, xcue.timestamp_,
+                              static_cast<int64_t>(xcue.duration_seconds_ *
+                                                    time_scale_),
+                              xcue.scte_data_, xcue.date_time_};
+        } else {  // kExtCueIn
+          previous_Scte35_ = {0, 0, 0, "", ""};
+        }
+      }
+      pending_cue_tags.clear();
+
       current_buffer_depth_ -= segment_info.duration_seconds();
       RemoveOldSegment(segment_info.start_time());
       media_sequence_number_++;
@@ -1175,6 +1260,13 @@ void MediaPlaylist::SlideWindow() {
   // Add key entries back.
   entries_.insert(entries_.begin(), std::make_move_iterator(ext_x_keys.begin()),
                   std::make_move_iterator(ext_x_keys.end()));
+  // Any CUE-OUT/CUE-IN tag still held here was never actually evicted (see
+  // pending_cue_tags' own comment above) - put it back immediately before
+  // whichever segment survived (now at entries_.begin()), or at the front
+  // of an otherwise-empty list if every segment was evicted.
+  entries_.insert(entries_.begin(),
+                  std::make_move_iterator(pending_cue_tags.begin()),
+                  std::make_move_iterator(pending_cue_tags.end()));
 }
 
 void MediaPlaylist::RemoveOldSegment(int64_t start_time) {
