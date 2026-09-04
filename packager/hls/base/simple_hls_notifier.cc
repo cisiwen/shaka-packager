@@ -316,9 +316,13 @@ std::unique_ptr<MediaPlaylist> MediaPlaylistFactory::Create(
 SimpleHlsNotifier::SimpleHlsNotifier(const HlsParams& hls_params)
     : HlsNotifier(hls_params),
       media_playlist_factory_(new MediaPlaylistFactory()) {
-  if (hls_params.add_program_date_time) {
-    reference_time_ = absl::Now();
-  }
+  // Always captured, not just when add_program_date_time is set: MediaPlaylist's own
+  // start_time_in_HH_MM_SS_MMM calls (DATERANGE START-DATE, the SCTE-35 cue's own embedded
+  // PROGRAM-DATE-TIME) need this real wall-clock anchor unconditionally, regardless of whether
+  // the standalone #EXT-X-PROGRAM-DATE-TIME tag feature itself is enabled - without it those PTS
+  // values get misread as milliseconds since the Unix epoch instead of since this real instant,
+  // producing a nonsensical ~1970-01-01 date.
+  reference_time_ = absl::Now();
   const auto master_playlist_path =
       std::filesystem::u8path(hls_params.master_playlist_output);
   master_playlist_dir_ = master_playlist_path.parent_path().string();
@@ -587,6 +591,19 @@ bool SimpleHlsNotifier::NotifyCueEvent(uint32_t stream_id, int64_t timestamp) {
 bool SimpleHlsNotifier::NotifySCTE35Event(int64_t timestamp, int64_t duration, const std::string& cue_data,
                                           uint32_t splice_event_id) {
   absl::MutexLock lock(lock_);
+  // See seen_scte35_events_'s own doc comment (simple_hls_notifier.h): up to
+  // three independent demuxer instances can each report this same real
+  // splice command with their own slightly different timestamp. Only the
+  // first report for a given (id, cue-out/cue-in) pair is forwarded, so
+  // every playlist stamps an identical, canonical time for the same event.
+  const bool is_cue_out = duration >= 0;
+  if (!seen_scte35_events_.insert({splice_event_id, is_cue_out}).second) {
+    LOG(INFO) << "SimpleHlsNotifier::NotifySCTE35Event ignoring duplicate "
+                 "report for splice_event_id="
+              << splice_event_id << " is_cue_out=" << is_cue_out
+              << " (already broadcast from another stream's demuxer)";
+    return true;
+  }
   LOG(INFO)<<"SimpleHlsNotifier::NotifySCTE35Event notify all streams"<<std::endl;
   for (auto stream_iterator = stream_map_.begin(); stream_iterator != stream_map_.end(); ++stream_iterator) {
     StreamEntry* entry = stream_iterator->second.get();

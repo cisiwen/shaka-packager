@@ -382,6 +382,13 @@ class MediaPlaylist {
   // This is the wall clock time when media timestamp is 0.
   absl::Time reference_time_;
 
+  // The PROGRAM-DATE-TIME value the next segment should get, when --add_program_date_time is on.
+  // Advances by each emitted segment's own EXTINF duration rather than being recomputed from that
+  // segment's own raw PTS every time - see AddSegmentInfoEntry's own doc comment for why. Reset to
+  // absl::InfinitePast() (meaning "resync from real PTS next time") on the first segment and after
+  // any genuine discontinuity.
+  absl::Time next_program_date_time_ = absl::InfinitePast();
+
   // Used by kVideoIFrameOnly playlists to track the i-frames (key frames).
   struct KeyFrameInfo {
     int64_t timestamp;

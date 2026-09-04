@@ -144,29 +144,34 @@ std::string time_in_HH_MM_SS_MMM(int64_t time_offset = 0) // time offset in mill
     return oss.str();
 }
 
-std::string start_time_in_HH_MM_SS_MMM(int64_t start_time = 0) // pts start time 
+std::string start_time_in_HH_MM_SS_MMM(int64_t start_time,
+                                        absl::Time reference_time = absl::UnixEpoch())
+// start_time: pts ticks (fixed 90kHz SCTE-35 domain clock) elapsed since the stream's own start.
+// reference_time: the real wall-clock instant the stream itself started (see
+// SimpleHlsNotifier::reference_time_'s own doc comment) - added to start_time (converted to
+// milliseconds) to get the real date/time this PTS value corresponds to.
+//
+// Uses the same absl::Time/UTCTimeZone-based formatting as ProgramDateTimeEntry::ToString()
+// (rather than std::chrono + std::localtime, this function's own previous approach) for two
+// reasons, both confirmed as real bugs against a live deployed session:
+//   1. With no reference_time parameter at all, the old version built its time_point directly
+//      from start_time/90 milliseconds - silently treating "milliseconds since the stream
+//      started" as "milliseconds since the Unix epoch", producing a nonsensical ~1970-01-01 date
+//      on every DATERANGE START-DATE and SCTE-35 PROGRAM-DATE-TIME tag this function feeds.
+//   2. std::localtime uses whatever timezone the OS process happens to be running under, while
+//      the output unconditionally appended a literal 'Z' (UTC) suffix regardless - only ever
+//      "correct" by coincidence on a host already set to the UTC timezone. absl::UTCTimeZone()
+//      makes the UTC conversion explicit instead of incidental.
 {
-    using namespace std::chrono;
-
-    // get millisec time
-    std::chrono::time_point<std::chrono::system_clock> now ( std::chrono::milliseconds((int64_t)start_time/90) );  // start_time / 90000 = time in seconds
-
-    // get number of milliseconds for the current second
-    // (remainder after division into seconds)
-    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
-
-    // convert to std::time_t in order to convert to std::tm (broken time)
-    auto timer = system_clock::to_time_t(now);
-
-    // convert to broken time
-    std::tm bt = *std::localtime(&timer);
-
-    std::ostringstream oss;
-    //<YYYY-MM-DDThh:mm:ss.SSSZ>
-    oss << std::put_time(&bt, "%Y-%m-%dT%H:%M:%S"); // HH:MM:SS
-    oss << '.' << std::setfill('0') << std::setw(3) << ms.count()<<'Z';
-
-    return oss.str();
+    const absl::Time real_time =
+        reference_time + absl::Milliseconds(static_cast<int64_t>(start_time) / 90);
+    absl::CivilSecond cs = absl::ToCivilSecond(real_time, absl::UTCTimeZone());
+    int64_t total_ms = absl::ToUnixMillis(real_time);
+    int ms = static_cast<int>(total_ms % 1000);
+    if (ms < 0)
+      ms += 1000;  // correction for possible negative times
+    return absl::StrFormat("%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", cs.year(), cs.month(), cs.day(),
+                            cs.hour(), cs.minute(), cs.second(), ms);
 }
 
 std::string CreatePlaylistHeader(
@@ -696,7 +701,7 @@ void MediaPlaylist::AddPlacementOpportunity() {
 
 void MediaPlaylist::AddXCueOut(Scte35 scte35) {
   LOG(INFO)<<"HLS: XCueOut "<<static_cast< float >(scte35.duration)/time_scale_<<std::endl;
-  entries_.emplace_back(new XCueOut(static_cast< float >(scte35.duration)/time_scale_, scte35.id, scte35.cue_data, start_time_in_HH_MM_SS_MMM(scte35.timestamp + hls_params_.pts_time_offset), hls_params_.advert_url));
+  entries_.emplace_back(new XCueOut(static_cast< float >(scte35.duration)/time_scale_, scte35.id, scte35.cue_data, start_time_in_HH_MM_SS_MMM(scte35.timestamp + hls_params_.pts_time_offset, reference_time_), hls_params_.advert_url));
 }
 
 void MediaPlaylist::AddXCueCont(int64_t duration, float passed) {
@@ -748,7 +753,7 @@ bool MediaPlaylist::WriteToFile(const std::filesystem::path& file_path,
   // restarts); otherwise this must stay empty to match default behavior.
   const std::string header_program_datetime =
       hls_params_.pts_time_offset != 0
-          ? start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset)
+          ? start_time_in_HH_MM_SS_MMM(start_time + hls_params_.pts_time_offset, reference_time_)
           : "";
   std::string content = CreatePlaylistHeader(
       media_info_, target_duration_, playlist_type, stream_type_,
@@ -917,8 +922,8 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
           // declared duration by that same, otherwise-unaccounted-for gap.
           current_Scte35_.timestamp = start_time;
           //current_Scte35_.datetime = time_in_HH_MM_SS_MMM(1000*hls_params_.time_shift_buffer_depth);
-          LOG(INFO)<<"HLS: XCueOut "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
-          current_Scte35_.datetime = start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset);
+          LOG(INFO)<<"HLS: XCueOut "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset, reference_time_)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
+          current_Scte35_.datetime = start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset, reference_time_);
           AddXCueOut(current_Scte35_);
         }
         else {
@@ -930,7 +935,7 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
           // #EXT-X-CUE-IN, and/or a cue-in for one event could incorrectly
           // close an unrelated, still-open break for a different event.
           if (current_Scte35_.duration > 0 && current_Scte35_.id == iter.id) {
-            LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
+            LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(iter.timestamp + hls_params_.pts_time_offset, reference_time_)<<" duration: "<<iter.duration<<" timestamp: "<<iter.timestamp<<" starttime: "<<start_time<<std::endl;
             current_Scte35_ = {0,0,0,"",""};
             AddXCueIn(current_Scte35_);
           } else {
@@ -945,7 +950,7 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
   if (!inserted_cue && current_Scte35_.duration > 0  && current_Scte35_.timestamp <= start_time){
     if(current_Scte35_.timestamp + static_cast<uint64_t>(current_Scte35_.duration) <= static_cast<uint64_t>(start_time)){
       //TODO: I'm not sure if this needed (Usually Cue In is sent)
-      LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(current_Scte35_.timestamp + hls_params_.pts_time_offset)<<" duration: "<<current_Scte35_.duration<<" timestamp: "<<current_Scte35_.timestamp<<" starttime: "<<start_time<<std::endl;
+      LOG(INFO)<<"HLS: XCueIn "<<start_time_in_HH_MM_SS_MMM(current_Scte35_.timestamp + hls_params_.pts_time_offset, reference_time_)<<" duration: "<<current_Scte35_.duration<<" timestamp: "<<current_Scte35_.timestamp<<" starttime: "<<start_time<<std::endl;
       current_Scte35_ = {0,0,0,"",""};
       AddXCueIn(current_Scte35_);
     } else {
@@ -975,10 +980,29 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     }
   }
 
-  if (hls_params_.add_program_date_time &&
-      reference_time_ != absl::InfinitePast()) {
-    // See if we need to add a program date time tag. It is added before the
-    // first segment, and after every discontinuity.
+  if (hls_params_.add_program_date_time && reference_time_ != absl::InfinitePast()) {
+    // Every segment gets its own PROGRAM-DATE-TIME tag, not just the first one and ones after a
+    // discontinuity - standard practice for LIVE HLS specifically (unlike VOD, where a player
+    // already has the full segment history and can just sum EXTINF durations from a single
+    // anchor): a player joining mid-stream, or a client re-fetching a sliding-window playlist
+    // after any segments have rolled off, gets each visible segment's own absolute wall-clock
+    // time directly, without needing history that may no longer be in the playlist at all - see
+    // this file's own doc comment on this same problem for SCTE-35 DATERANGE tags scrolling out
+    // of the live window with nothing left to reconstruct their real time from.
+    //
+    // Deliberately NOT computed as reference_time_ + start_time/time_scale_ (start_time's own raw
+    // PTS) for every segment: ChunkingHandler can silently drop samples between a forced SCTE-35
+    // cut and the next real keyframe (SAP alignment requires waiting for one - see
+    // ChunkingHandler::OnMediaSample's own "discard samples before segment start" comment), which
+    // showed up in a real test as a ~1.6s PTS gap with no accompanying #EXT-X-DISCONTINUITY. A
+    // per-segment tag computed from raw PTS would "jump" across that gap even though nothing
+    // marks it as a discontinuity - inconsistent with what a player computes for the SAME segment
+    // by just summing preceding EXTINF durations from the previous tag, per the HLS spec's own
+    // model. Instead, every segment's tag is the PREVIOUS one plus its own EXTINF duration -
+    // always exactly consistent with EXTINF summation - and only resyncs to the real PTS-derived
+    // wall-clock time at the two points that legitimately warrant it: the very first segment, and
+    // right after a genuine #EXT-X-DISCONTINUITY (an real, structural stream break, unlike an
+    // SCTE-35 cue point, which never gets one).
     bool is_first_segment = true;
     bool is_discontinuity = false;
     if (!entries_.empty()) {
@@ -1001,12 +1025,33 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
       }
     }
 
-    if (is_first_segment || is_discontinuity) {
-      const absl::Time program_time =
+    const bool cue_out_just_added =
+        !entries_.empty() &&
+        entries_.back()->type() == HlsEntry::EntryType::kExtCueOut;
+
+    if (is_first_segment || is_discontinuity || cue_out_just_added ||
+        next_program_date_time_ == absl::InfinitePast()) {
+      // Resync to the real PTS-derived time. For is_first_segment/is_discontinuity/uninitialized,
+      // this is the same resync the cumulative design always needed. For cue_out_just_added: a
+      // CUE-OUT landing on this exact segment already forced its own embedded PROGRAM-DATE-TIME
+      // to be printed immediately before it (see AddXCueOut/start_time_in_HH_MM_SS_MMM, computed
+      // from this identical start_time), which a player reads regardless of whether this code
+      // also emits its own tag below. The cumulative clock MUST align to that already-printed
+      // value here, not silently keep advancing from whatever it was tracking before the cue -
+      // otherwise the very next segment's own cumulative tag would disagree with what a player
+      // computes from the CUE-OUT segment's own printed tag plus its own EXTINF duration.
+      next_program_date_time_ =
           reference_time_ +
           absl::Seconds(static_cast<double>(start_time) / time_scale_);
-      entries_.emplace_back(new ProgramDateTimeEntry(program_time));
     }
+
+    // Don't print a second, identical tag right after the CUE-OUT's own one (XCueOut::ToString()
+    // already embeds it - see above) - the resync just above still keeps the running clock
+    // correctly aligned to it either way.
+    if (!cue_out_just_added) {
+      entries_.emplace_back(new ProgramDateTimeEntry(next_program_date_time_));
+    }
+    next_program_date_time_ += absl::Seconds(segment_duration_seconds);
   }
 
   entries_.emplace_back(new SegmentInfoEntry(
@@ -1096,7 +1141,18 @@ void MediaPlaylist::SlideWindow() {
      else if (entry_type == HlsEntry::EntryType::kExtPlacementOpportunity || entry_type == HlsEntry::EntryType::kExtCueCont) {
         //do smth with Cues
 
-      } else { 
+      } else if (entry_type == HlsEntry::EntryType::kProgramDateTime) {
+      // Not a segment of its own - just metadata attached to whichever segment follows it (see
+      // AddSegmentInfoEntry's own per-segment PROGRAM-DATE-TIME logic). Falling through to the
+      // final `else` below (which assumes every remaining entry type is kExtInf) would
+      // reinterpret_cast this ProgramDateTimeEntry as a SegmentInfoEntry and read its
+      // duration_seconds() from the wrong memory layout entirely - undefined behavior that
+      // corrupted current_buffer_depth_ with garbage values, confirmed as the cause of a real
+      // deployed session's sliding window growing without bound instead of evicting old segments,
+      // once every segment started getting its own tag instead of just the first one. Skip it
+      // entirely: it doesn't count against the time-shift buffer and must never trigger the break
+      // below on its own.
+    } else {
       DCHECK_EQ(static_cast<int>(entry_type),
                 static_cast<int>(HlsEntry::EntryType::kExtInf));
 

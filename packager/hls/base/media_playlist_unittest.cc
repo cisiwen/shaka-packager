@@ -875,6 +875,57 @@ TEST_F(LiveMediaPlaylistTest, TimeShifted) {
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
 }
 
+// Regression test for a real deployed-session bug: SlideWindow()'s eviction scan assumed every
+// entry it hadn't already special-cased (kExtKey/kExtDiscontinuity/kExtCueOut/kExtCueIn/
+// kExtPlacementOpportunity/kExtCueCont) was a kExtInf segment, and reinterpret_cast it as one
+// unconditionally. Once every segment started getting its own ProgramDateTimeEntry (a type that
+// scan never accounted for), that cast silently read garbage memory as a "duration", corrupting
+// current_buffer_depth_ - confirmed against a real session where the sliding window stopped
+// evicting old segments entirely once every-segment tagging landed. This is the exact same
+// scenario as the TimeShifted test above, just with --add_program_date_time on: same segments,
+// same expected eviction (file1 dropped, MEDIA-SEQUENCE:1) - if the fix regresses, this either
+// crashes/UBSan-flags in a sanitized build, or the resulting MEDIA-SEQUENCE/segment list silently
+// stops matching TimeShifted's own untagged behavior.
+TEST_F(LiveMediaPlaylistTest, TimeShiftedWithProgramDateTime) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 20 * kTimeScale,
+                              kZeroByteOffset, 2 * kMBytes);
+  media_playlist_->AddSegment("file3.ts", 30 * kTimeScale, 20 * kTimeScale,
+                              kZeroByteOffset, 2 * kMBytes);
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, false));
+  std::string content;
+  ASSERT_TRUE(File::ReadFileToString(kMemoryFilePath, &content));
+
+  // The core assertion: file1 was evicted (matching TimeShifted's own untagged behavior exactly -
+  // this is what silently broke without the SlideWindow fix), and both remaining segments are
+  // still present and intact, with no crash and no corrupted/garbage buffer-depth bookkeeping
+  // preventing this eviction from happening.
+  EXPECT_THAT(content, ::testing::HasSubstr("#EXT-X-MEDIA-SEQUENCE:1\n"));
+  EXPECT_THAT(content, ::testing::Not(::testing::HasSubstr("file1.ts")));
+  EXPECT_THAT(content, ::testing::HasSubstr("file2.ts"));
+  EXPECT_THAT(content, ::testing::HasSubstr("file3.ts"));
+  // file3's own tag must still be correctly computed (reference_time + its own real 30s offset,
+  // matching TimeShifted's own segment start_time for file3) - proving the surrounding
+  // per-segment PROGRAM-DATE-TIME logic (not just the SlideWindow fix in isolation) still works
+  // correctly once eviction has actually run.
+  EXPECT_THAT(content, ::testing::HasSubstr(
+                            "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:30.000Z\n"));
+}
+
 TEST_F(LiveMediaPlaylistTest, TimeShiftedWithEncryptionInfo) {
   ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
 
@@ -1425,6 +1476,264 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
       "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:25.000Z\n"
       "#EXTINF:10.000,\n"
       "file2.ts\n"
+      // file3 shares file2's own start_time (25 * kTimeScale), but its tag is file2's tag plus
+      // file2's own EXTINF duration (14:00:25 + 10s = 14:00:35) - the cumulative clock, not a
+      // fresh PTS-based computation from that shared start_time - since file3 isn't the first
+      // segment or right after a discontinuity. This is exactly consistent with what a player
+      // computes by summing EXTINF durations forward from file2's own tag.
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:35.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file3.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Verifies every segment gets its own PROGRAM-DATE-TIME tag (not just the first one and ones
+// after a discontinuity), so a player looking at any single visible segment (e.g. after others
+// have rolled off a live sliding-window playlist) always has its own real wall-clock anchor with
+// nothing to reconstruct from history that may no longer be present. These 3 segments have no PTS
+// gaps between them, so the cumulative (previous tag + previous duration) and raw-PTS-based
+// values coincide exactly - see ProgramDateTimeIgnoresPtsGapWithoutDiscontinuity below for the
+// case where they differ.
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeOnEverySegment) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  media_playlist_->AddSegment("file2.ts", 10 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  media_playlist_->AddSegment("file3.ts", 20 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:10.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:20.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file3.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Regression test for exactly the real-world case that motivated the cumulative-clock design:
+// ChunkingHandler can discard samples between a forced segment boundary (e.g. a live SCTE-35 cue)
+// and the next real keyframe, since SAP alignment requires waiting for one - producing a PTS gap
+// with no accompanying #EXT-X-DISCONTINUITY (confirmed against a real deployed session: segment 5
+// ended at tick 1022400, segment 6 started at 1170000 - a 1.64s gap, no discontinuity tag).
+// file2 here simulates that: it starts 2 seconds after file1's own 10-second declared duration
+// would put it, without any discontinuity. Its PROGRAM-DATE-TIME must still be file1's tag plus
+// file1's own EXTINF duration (14:00:00 + 10s = 14:00:10) - exactly what a player computes from
+// EXTINF summation - NOT a fresh 14:00:12 computed from file2's own (gapped) raw PTS, which would
+// silently disagree with that same player's own math.
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeIgnoresPtsGapWithoutDiscontinuity) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  // Starts at 12s, not the 10s file1's own duration would suggest - a 2s PTS gap, no
+  // discontinuity tag inserted for it.
+  media_playlist_->AddSegment("file2.ts", 12 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:10.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Regression test for a live in-band SCTE-35 cue-out's own DATERANGE START-DATE and embedded
+// PROGRAM-DATE-TIME using the real wall-clock reference time (via SetReferenceTime, the same
+// mechanism the ProgramDateTime tests above use) instead of misreading the SCTE-35 event's raw PTS
+// ticks as milliseconds since the Unix epoch - which previously produced a START-DATE of
+// "1970-01-01T00:00:05.000Z" for an event 5 seconds into the stream, instead of 5 seconds after
+// the real reference time. Deliberately does NOT set add_program_date_time (AddXCueOut's own
+// DATERANGE is unconditional, independent of that flag - see media_playlist.cc's own
+// AddXCueOut/AddSegmentInfoEntry).
+TEST_F(MediaPlaylistMultiSegmentTest, Scte35CueOutUsesRealReferenceTime) {
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  // A cue-out 5 seconds into the stream, declaring a 10 second break.
+  media_playlist_->AddScte35Event(5 * kTimeScale, 10 * kTimeScale, "", 42);
+  media_playlist_->AddSegment("file1.ts", 5 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-DATERANGE:ID=\"42\",CLASS=\"com.apple.hls.interstitial\","
+      "START-DATE=\"2025-10-12T14:00:05.000Z\",DURATION=10.000,"
+      "X-RESUME-OFFSET=0.000,X-ASSET-URI=\"?duration=10\","
+      "X-TIMELINE-OCCUPIES=\"RANGE\"\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:05.000Z\n"
+      "#EXT-X-CUE-OUT:10.000\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// With --add_program_date_time on AND a live SCTE-35 cue-out landing on the same segment, only
+// ONE PROGRAM-DATE-TIME tag should appear there - XCueOut::ToString() already embeds its own at
+// this exact instant, so AddSegmentInfoEntry's own per-segment tag must be skipped for this one
+// segment specifically (not disabled for the whole playlist - the following ordinary segment
+// still gets its own, independent tag).
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeNotDuplicatedOnCueOutSegment) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  // A cue-out 5 seconds into the stream, declaring a 10 second break.
+  media_playlist_->AddScte35Event(5 * kTimeScale, 10 * kTimeScale, "", 42);
+  media_playlist_->AddSegment("file1.ts", 5 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  media_playlist_->AddSegment("file2.ts", 15 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-DATERANGE:ID=\"42\",CLASS=\"com.apple.hls.interstitial\","
+      "START-DATE=\"2025-10-12T14:00:05.000Z\",DURATION=10.000,"
+      "X-RESUME-OFFSET=0.000,X-ASSET-URI=\"?duration=10\","
+      "X-TIMELINE-OCCUPIES=\"RANGE\"\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:05.000Z\n"
+      "#EXT-X-CUE-OUT:10.000\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      // The break's own declared duration ends exactly when file2 starts, so a synthetic
+      // CUE-IN is auto-inserted here (see AddSegmentInfoEntry) - XCueIn::ToString() never embeds
+      // its own PROGRAM-DATE-TIME (unlike XCueOut's), so no dedup is needed for this tag.
+      "#EXT-X-CUE-IN\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:15.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
+// Regression test for a bug the previous test couldn't catch: there, the cue-out landed on the
+// very first segment, so is_first_segment's own resync already produced the right value by
+// coincidence. Here the cue-out lands on a LATER segment, with a 2-second PTS gap simulating the
+// real dropped-frame case (see ProgramDateTimeIgnoresPtsGapWithoutDiscontinuity's own doc comment)
+// - so the cumulative clock must explicitly resync to the CUE-OUT's own already-printed
+// PROGRAM-DATE-TIME for that segment, not silently keep advancing from its pre-cue value. Without
+// that resync, file3's tag would read 14:00:20 (10s + 10s from file1's own post-advance clock)
+// instead of the 14:00:22 a player actually computes from the CUE-OUT segment's own printed tag
+// (14:00:12) plus its own 10s EXTINF duration.
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeResyncsToCueOutOnLaterSegment) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 0, 10 * kTimeScale, kZeroByteOffset,
+                              kMBytes);
+  // A cue-out at 12s - a 2s PTS gap past file1's own natural 10s end, with no discontinuity.
+  media_playlist_->AddScte35Event(12 * kTimeScale, 10 * kTimeScale, "", 99);
+  media_playlist_->AddSegment("file2.ts", 12 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  media_playlist_->AddSegment("file3.ts", 22 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:10\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:00.000Z\n"
+      "#EXTINF:10.000,\n"
+      "file1.ts\n"
+      "#EXT-X-DATERANGE:ID=\"99\",CLASS=\"com.apple.hls.interstitial\","
+      "START-DATE=\"2025-10-12T14:00:12.000Z\",DURATION=10.000,"
+      "X-RESUME-OFFSET=0.000,X-ASSET-URI=\"?duration=10\","
+      "X-TIMELINE-OCCUPIES=\"RANGE\"\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:12.000Z\n"
+      "#EXT-X-CUE-OUT:10.000\n"
+      "#EXTINF:10.000,\n"
+      "file2.ts\n"
+      // The break's own declared duration ends exactly when file3 starts, so a synthetic CUE-IN
+      // is auto-inserted here too (same as ProgramDateTimeNotDuplicatedOnCueOutSegment above).
+      "#EXT-X-CUE-IN\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:22.000Z\n"
       "#EXTINF:10.000,\n"
       "file3.ts\n"
       "#EXT-X-ENDLIST\n";
