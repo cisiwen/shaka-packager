@@ -211,15 +211,23 @@ TEST_F(ChunkingHandlerTest, Scte35Event) {
   // Identical segmentation shape to the CueEvent test above - the SCTE-35 event forces the same
   // early segment - but IsScte35EventPassthrough (the original message, unmodified) appears
   // where IsCueEvent appeared there, and no CueEvent is ever emitted.
+  //
+  // The event passthrough comes BEFORE the SegmentInfo that closes the segment it interrupted -
+  // not after, as it would if the segment closed synchronously the instant the event arrived.
+  // The close is deliberately deferred to the next sample actually eligible to start a fresh
+  // segment (see ForceSegmentBoundaryAt/pending_forced_boundary_'s own doc comments): closing
+  // synchronously would mean every sample arriving before that next eligible one - a live splice
+  // point essentially never lands exactly on one - falls into the "discard samples before
+  // segment start" branch and is silently lost, up to a full partial GOP of real video per cue.
   EXPECT_THAT(
       GetOutputStreamDataVector(),
       ElementsAre(
           IsMediaSample(kStreamIndex, kVideoStartTimestamp, kDuration,
                         !kEncrypted, _),
+          IsScte35EventPassthrough(kStreamIndex, scte35_event),
           // A new segment is created due to the existance of the SCTE-35 event.
           IsSegmentInfo(kStreamIndex, kVideoStartTimestamp, kDuration,
                         !kIsSubsegment, !kEncrypted),
-          IsScte35EventPassthrough(kStreamIndex, scte35_event),
           IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 1,
                         kDuration, !kEncrypted, _),
           IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 2,
@@ -263,15 +271,18 @@ TEST_F(ChunkingHandlerTest, CueEvent) {
     }
   }
 
+  // The CueEvent comes BEFORE the SegmentInfo that closes the segment it interrupted - see the
+  // Scte35Event test's own comment on why the close is deliberately deferred to the next sample
+  // actually eligible to start a fresh segment, rather than closing synchronously right here.
   EXPECT_THAT(
       GetOutputStreamDataVector(),
       ElementsAre(
           IsMediaSample(kStreamIndex, kVideoStartTimestamp, kDuration,
                         !kEncrypted, _),
+          IsCueEvent(kStreamIndex, kCueTimeInSeconds),
           // A new segment is created due to the existance of Cue.
           IsSegmentInfo(kStreamIndex, kVideoStartTimestamp, kDuration,
                         !kIsSubsegment, !kEncrypted),
-          IsCueEvent(kStreamIndex, kCueTimeInSeconds),
           IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 1,
                         kDuration, !kEncrypted, _),
           IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 2,
@@ -284,6 +295,74 @@ TEST_F(ChunkingHandlerTest, CueEvent) {
                         kDuration, !kEncrypted, _),
           IsSegmentInfo(kStreamIndex, kVideoStartTimestamp + kDuration,
                         kDuration * 4, !kIsSubsegment, !kEncrypted),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 5,
+                        kDuration, !kEncrypted, _)));
+}
+
+// Regression test for a real production bug: a live in-band SCTE-35 event essentially never
+// lands exactly on a real keyframe (the encoder forces one "right at the splice point", but that
+// keyframe arrives some time after the event is parsed - up to a full GOP later). Every
+// non-keyframe sample in between used to be silently discarded (an earlier version of
+// ForceSegmentBoundaryAt used segment_start_time_ = std::nullopt itself as the "force a cut"
+// signal, which fell straight into OnMediaSample's "discard samples before segment start"
+// branch) - confirmed live via direct frame-level ffprobe analysis: Packager's own packaged
+// output had a real ~0.4s hole of missing video frames at every cue-forced boundary, even though
+// the exact same frames were present, cleanly spaced, in the raw stream Packager received.
+// This asserts every one of those in-between samples is dispatched, not dropped, and correctly
+// extends the segment that's about to close (rather than being lost) right up until the real
+// next keyframe finally arrives and starts the new one.
+TEST_F(ChunkingHandlerTest, Scte35EventDoesNotDropNonKeyframeSamplesBeforeNextKeyframe) {
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;
+  SetUpChunkingHandler(1, chunking_params);
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetVideoStreamInfo(kTimeScale1))));
+  ClearOutputStreamDataVector();
+
+  const int64_t kVideoStartTimestamp = 12345;
+  // Lands mid-GOP, well before the next real keyframe (samples 1-3 below) - exactly the case
+  // that used to lose samples.
+  const double kCueTimeInSeconds =
+      static_cast<double>(kVideoStartTimestamp + kDuration / 2) / kTimeScale1;
+  auto scte35_event = std::make_shared<SCTE35Event>(
+      "cue-id", static_cast<int64_t>(kCueTimeInSeconds * 90000),
+      /*duration=*/0);
+
+  // Sample 0: real key frame, starts the segment. 1-3: non-key frames arriving after the cue but
+  // before the next real key frame - must all be dispatched, not discarded. 4: the next real key
+  // frame, finally closes the interrupted segment and opens a new one. 5: trails into it.
+  const bool kIsKeyFrame[] = {true, false, false, false, true, false};
+  for (int i = 0; i < 6; ++i) {
+    ASSERT_OK(Process(StreamData::FromMediaSample(
+        kStreamIndex, GetMediaSample(kVideoStartTimestamp + i * kDuration,
+                                     kDuration, kIsKeyFrame[i]))));
+    if (i == 0) {
+      ASSERT_OK(Process(
+          StreamData::FromScte35Event(kStreamIndex, scte35_event)));
+    }
+  }
+
+  EXPECT_THAT(
+      GetOutputStreamDataVector(),
+      ElementsAre(
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp, kDuration,
+                        !kEncrypted, _),
+          IsScte35EventPassthrough(kStreamIndex, scte35_event),
+          // Samples 1-3: non-key frames between the cue and the next real key frame - the exact
+          // samples that used to be silently discarded. All three must still be dispatched.
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 1,
+                        kDuration, !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 2,
+                        kDuration, !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 3,
+                        kDuration, !kEncrypted, _),
+          // The interrupted segment finally closes on sample 4 (the next real key frame) -
+          // its duration correctly extends to cover samples 1-3 instead of losing them.
+          IsSegmentInfo(kStreamIndex, kVideoStartTimestamp, kDuration * 4,
+                        !kIsSubsegment, !kEncrypted),
+          IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 4,
+                        kDuration, !kEncrypted, _),
           IsMediaSample(kStreamIndex, kVideoStartTimestamp + kDuration * 5,
                         kDuration, !kEncrypted, _)));
 }

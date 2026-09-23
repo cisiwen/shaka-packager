@@ -95,7 +95,9 @@ Status ChunkingHandler::OnStreamInfo(std::shared_ptr<const StreamInfo> info) {
 }
 
 Status ChunkingHandler::OnCueEvent(std::shared_ptr<const CueEvent> event) {
-  RETURN_IF_ERROR(EndSegmentIfStarted());
+  // Do NOT EndSegmentIfStarted() here - see ForceSegmentBoundaryAt's own doc comment for why the
+  // currently-open segment must stay open (and keep accepting samples) until the next sample
+  // actually eligible to start a fresh one arrives, instead of being closed out immediately.
   const double event_time_in_seconds = event->time_in_seconds;
   RETURN_IF_ERROR(DispatchCueEvent(kStreamIndex, std::move(event)));
   ForceSegmentBoundaryAt(event_time_in_seconds);
@@ -103,11 +105,15 @@ Status ChunkingHandler::OnCueEvent(std::shared_ptr<const CueEvent> event) {
 }
 
 void ChunkingHandler::ForceSegmentBoundaryAt(double event_time_in_seconds) {
-  // Force start new segment after cue event.
-  segment_start_time_ = std::nullopt;
   // |cue_offset_| will be applied to sample timestamp so the segment after cue
   // point have duration ~= |segment_duration_|.
   cue_offset_ = event_time_in_seconds * time_scale_;
+  // Force a cut at the next sample eligible to start a segment (see pending_forced_boundary_'s
+  // own doc comment for why this - not segment_start_time_ = std::nullopt - is the right way to
+  // signal that: this leaves the currently-open segment exactly as-is, so every sample that
+  // arrives before that next eligible one keeps flowing into it normally instead of being
+  // discarded).
+  pending_forced_boundary_ = true;
   // Marks the segment that's about to start (whenever OnMediaSample next actually starts one) so
   // its eventual SegmentInfo carries is_cue_aligned - see that field's own doc comment.
   next_segment_cue_aligned_ = true;
@@ -176,7 +182,7 @@ Status ChunkingHandler::ForceSegmentBoundaryNow(double event_time_in_seconds) {
             << event_time_in_seconds << "s), segment_start_time_="
             << (segment_start_time_ ? *segment_start_time_ : -1)
             << " max_segment_time_=" << max_segment_time_;
-  RETURN_IF_ERROR(EndSegmentIfStarted());
+  // Do NOT EndSegmentIfStarted() here - see ForceSegmentBoundaryAt's own doc comment.
   ForceSegmentBoundaryAt(event_time_in_seconds);
   return Status::OK;
 }
@@ -194,7 +200,7 @@ Status ChunkingHandler::OnMediaSample(
     const int64_t segment_index =
         timestamp < cue_offset_ ? 0
                                 : (timestamp - cue_offset_) / segment_duration_;
-    if (!segment_start_time_ ||
+    if (!segment_start_time_ || pending_forced_boundary_ ||
         IsNewSegmentIndex(segment_index, current_segment_index_)) {
       current_segment_index_ = segment_index;
       // Reset subsegment index.
@@ -205,6 +211,9 @@ Status ChunkingHandler::OnMediaSample(
       subsegment_start_time_ = timestamp;
       max_segment_time_ = timestamp + sample->duration();
       started_new_segment = true;
+      // Consumed: this sample is the real next one eligible to start a segment after a cue, so
+      // the wait is over - see pending_forced_boundary_'s own doc comment.
+      pending_forced_boundary_ = false;
       // Latches whatever ForceSegmentBoundaryAt set for the segment that just ended (consumed by
       // EndSegmentIfStarted just above, using the *previous* value) onto the segment starting
       // right now, so it's this one - not the one that just ended - that gets marked

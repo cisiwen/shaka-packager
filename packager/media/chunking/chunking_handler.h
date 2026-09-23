@@ -132,6 +132,23 @@ class ChunkingHandler : public MediaHandler {
   bool next_segment_cue_aligned_ = false;
   bool current_segment_cue_aligned_ = false;
 
+  // Set by ForceSegmentBoundaryAt to mean "cut unconditionally at the next sample eligible to
+  // start a segment" (a real keyframe, when segment_sap_aligned - the default). Deliberately a
+  // separate flag from segment_start_time_: an earlier version of this used
+  // segment_start_time_ = std::nullopt itself as the "force" signal, which meant every sample
+  // that arrived while still waiting for that next keyframe (a live splice point almost never
+  // lands exactly on one) fell into OnMediaSample's "discard samples before segment start"
+  // branch below and was silently lost - up to a full partial GOP's worth of real video per cue,
+  // confirmed via direct ffprobe frame-level analysis comparing the raw pre-Packager stream
+  // (continuous) against Packager's own packaged output (a real gap at every cue-forced
+  // boundary). segment_start_time_ now stays exactly as a normal periodic boundary leaves it -
+  // still valid, still describing the segment that's logically about to close - so every
+  // in-between sample keeps flowing into it (correctly extending its own duration) instead of
+  // vanishing, right up until the real keyframe finally arrives and both this flag and
+  // segment_start_time_ are consumed/reset together, atomically, exactly as
+  // IsNewSegmentIndex(...) already does for an ordinary (non-cue) boundary.
+  bool pending_forced_boundary_ = false;
+
   // Unwraps 33-bit PTS/DTS timestamps to 64-bit monotonically increasing
   // values, handling wrap-around at 2^33. This ensures SegmentInfo timestamps
   // are always increasing even when input timestamps wrap around.
