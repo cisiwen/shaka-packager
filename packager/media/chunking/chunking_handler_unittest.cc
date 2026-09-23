@@ -367,6 +367,145 @@ TEST_F(ChunkingHandlerTest, Scte35EventDoesNotDropNonKeyframeSamplesBeforeNextKe
                         kDuration, !kEncrypted, _)));
 }
 
+// Regression test for a cue-follower stream (e.g. audio, driven by SegmentCoordinator - see
+// RegisterCueFollower's own doc comment): a real correction (ForceSegmentBoundaryNow, called from
+// OnSegmentInfo once the sync source's own realized cut is known) doesn't arrive until up to a
+// full segment_duration after the raw event - and every sample is trivially is_key_frame()==true
+// for a stream like this, so left alone it almost always fits in one more of its own regular
+// periodic cuts before that correction lands, leaving a small leftover fragment neither cut
+// needed (confirmed live against a reference multi-CDN encoder, which never produces that extra
+// fragment - its own audio segment count matches video's exactly, splice after splice).
+// SuppressPeriodicCutsUntilForcedBoundary - called as soon as the raw event arrives, before the
+// real correction's timestamp is even known - closes that gap: this asserts every sample in
+// between keeps extending the current segment (not triggering its own periodic cut), and the
+// eventual correction produces exactly one cut, not two.
+TEST_F(ChunkingHandlerTest, SuppressPeriodicCutsUntilForcedBoundaryProducesExactlyOneCut) {
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;
+  SetUpChunkingHandler(1, chunking_params);
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetVideoStreamInfo(kTimeScale1))));
+  ClearOutputStreamDataVector();
+
+  const int64_t kStartTimestamp = 12345;
+  // Sample 0 opens the segment normally.
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp, kDuration, kKeyFrame))));
+
+  // The raw event arrives - suppress this stream's own periodic grid before its real correction
+  // (the sync source's realized cut timestamp) is even known.
+  chunking_handler_->SuppressPeriodicCutsUntilForcedBoundary();
+
+  // Samples 1-4 span two of this stream's own regular segment_duration_-sized grid lines (every
+  // AAC-like sample here is a "key frame", so without suppression at least one of these would
+  // ordinarily cut on its own). None should - the segment stays open, extending through all of
+  // them.
+  for (int i = 1; i <= 4; ++i) {
+    ASSERT_OK(Process(StreamData::FromMediaSample(
+        kStreamIndex, GetMediaSample(kStartTimestamp + kDuration * i,
+                                     kDuration, kKeyFrame))));
+  }
+
+  // The real correction finally arrives, driven by the sync source's own realized cut.
+  const double kCorrectionTimeInSeconds =
+      static_cast<double>(kStartTimestamp + kDuration * 5) / kTimeScale1;
+  ASSERT_OK(chunking_handler_->ForceSegmentBoundaryNow(kCorrectionTimeInSeconds));
+
+  // The very next sample is this stream's own next eligible one (again, trivially a "key frame")
+  // - it finally closes the long-suppressed segment and opens a new one, in exactly one cut.
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp + kDuration * 5,
+                                   kDuration, kKeyFrame))));
+
+  EXPECT_THAT(
+      GetOutputStreamDataVector(),
+      ElementsAre(
+          IsMediaSample(kStreamIndex, kStartTimestamp, kDuration, !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 1, kDuration,
+                        !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 2, kDuration,
+                        !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 3, kDuration,
+                        !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 4, kDuration,
+                        !kEncrypted, _),
+          // Exactly one SegmentInfo - covering samples 0-4 in a single segment - not two.
+          IsSegmentInfo(kStreamIndex, kStartTimestamp, kDuration * 5, !kIsSubsegment,
+                        !kEncrypted),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 5, kDuration,
+                        !kEncrypted, _)));
+}
+
+// Regression test for a real bug found live in the fix above: a cue-follower's correction can
+// arrive up to ~1 segment_duration after the timestamp it was actually requested for (see
+// ForceSegmentBoundaryNow's own doc comment), so by the time it finally triggers a cut, the
+// periodic grid anchor (cue_offset_) computed from that *requested* timestamp can already be
+// most of the way through its own grid cell - meaning the very next sample immediately crosses
+// into the next periodic segment_index anyway, producing an unwanted second, tiny segment right
+// after the one the correction was supposed to produce on its own. This asserts a correction
+// requested for one timestamp but not actually landing until a later sample re-anchors the grid
+// to that sample's own real timestamp, so the freshly-opened segment gets a full, fresh
+// segment_duration before its own next periodic cut - not an almost-immediate second one.
+TEST_F(ChunkingHandlerTest, ForcedBoundaryReanchorsGridToActualCutNotRequestedTime) {
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;
+  SetUpChunkingHandler(1, chunking_params);
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetVideoStreamInfo(kTimeScale1))));
+  ClearOutputStreamDataVector();
+
+  const int64_t kStartTimestamp = 12345;
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp, kDuration, kKeyFrame))));
+  chunking_handler_->SuppressPeriodicCutsUntilForcedBoundary();
+
+  // Requested for 12.400s - but (as in a real cue-follower correction) the actual next eligible
+  // sample doesn't arrive until well after that, at 13345 below.
+  ASSERT_OK(chunking_handler_->ForceSegmentBoundaryNow(12.400));
+
+  // This sample is late enough (13345 - 12400 = 945, 94.5% of one segment_duration_) that,
+  // without re-anchoring, the segment_index grid it lands in has almost no room left - closes
+  // the suppressed segment and opens a new one.
+  const int64_t kForcedCutTimestamp = 13345;
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kForcedCutTimestamp, kDuration, kKeyFrame))));
+
+  // Only 300 ticks later - on the stale (unanchored) grid this alone already crosses into the
+  // next segment_index (945 + 300 = 1245 > 1000) and would wrongly cut again immediately. With
+  // re-anchoring, the grid restarted fresh at kForcedCutTimestamp, so this is nowhere near a
+  // boundary - must just extend the still-open segment.
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kForcedCutTimestamp + kDuration, kDuration, kKeyFrame))));
+
+  // A full segment_duration_ after the real cut (not the originally-requested time) - this
+  // finally does cross the (correctly re-anchored) grid, closing that segment normally.
+  const int64_t kNextRealBoundary = kForcedCutTimestamp + 1000;
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kNextRealBoundary, kDuration, kKeyFrame))));
+
+  EXPECT_THAT(
+      GetOutputStreamDataVector(),
+      ElementsAre(
+          IsMediaSample(kStreamIndex, kStartTimestamp, kDuration, !kEncrypted, _),
+          // The forced cut: closes the suppressed segment (duration only spans what was
+          // actually dispatched into it - just sample 0 here), opens a new one.
+          IsSegmentInfo(kStreamIndex, kStartTimestamp, kDuration, !kIsSubsegment,
+                        !kEncrypted),
+          IsMediaSample(kStreamIndex, kForcedCutTimestamp, kDuration, !kEncrypted, _),
+          // The very next sample must NOT produce a second SegmentInfo here - it just extends
+          // the segment the forced cut just opened.
+          IsMediaSample(kStreamIndex, kForcedCutTimestamp + kDuration, kDuration,
+                        !kEncrypted, _),
+          // Only once a full segment_duration_ has genuinely passed since the real cut (not the
+          // originally-requested time) does this segment finally close, normally - covering
+          // both of its own samples (2 * kDuration), not cut short by the stale grid.
+          IsSegmentInfo(kStreamIndex, kForcedCutTimestamp, kDuration * 2, !kIsSubsegment,
+                        !kEncrypted),
+          IsMediaSample(kStreamIndex, kNextRealBoundary, kDuration, !kEncrypted, _)));
+}
+
 TEST_F(ChunkingHandlerTest, LowLatencyDash) {
   ChunkingParams chunking_params;
   chunking_params.low_latency_dash_mode = true;

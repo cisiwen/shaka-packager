@@ -79,6 +79,22 @@ Status SegmentCoordinator::Process(std::unique_ptr<StreamData> stream_data) {
                 << event_time_in_seconds << "s";
       RETURN_IF_ERROR(receiver->ForceSegmentBoundaryNow(event_time_in_seconds));
     }
+    // Cue-follower streams (e.g. audio) don't get driven to a cut here at all - their real cut
+    // doesn't come until OnSegmentInfo drives them from the sync source's own *realized* cut,
+    // below. But left doing nothing until then, a follower keeps its own independent periodic
+    // chunking running in the meantime (see RegisterCueFollower's own doc comment) and almost
+    // always fits in one more regular cut of its own before that real correction arrives,
+    // leaving a small leftover fragment neither cut needed - see
+    // SuppressPeriodicCutsUntilForcedBoundary's own doc comment. Telling every follower right
+    // now, at the same moment immediate receivers react, closes that gap: it does not cut
+    // anything by itself, only pauses this stream's own regular grid until the real correction
+    // (or that method's own safety valve) actually does.
+    for (auto& entry : cue_follower_handlers_) {
+      LOG(INFO) << "SegmentCoordinator[" << this
+                << "]: received live SCTE-35 event, suppressing periodic cuts on "
+                << "cue-follower stream " << entry.first << " until its real correction arrives";
+      entry.second->SuppressPeriodicCutsUntilForcedBoundary();
+    }
     return Dispatch(std::move(stream_data));
   }
 

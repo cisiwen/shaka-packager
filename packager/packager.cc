@@ -775,18 +775,34 @@ Status CreateAudioVideoJobs(
             packaging_params.chunking_params);
         handlers.emplace_back(chunking_handler);
         handlers.emplace_back(segment_coordinator);
-        // Every media stream (video and audio) reacts immediately to the same raw live SCTE-35
-        // event - see RegisterScte35ImmediateReceiver's own doc comment for why this, not just the
-        // sync-source-driven correction below, is required to avoid a full extra segment_duration
-        // of latency confirmed via real deployment testing.
-        segment_coordinator->RegisterScte35ImmediateReceiver(chunking_handler);
-        // Audio has no keyframe concept of its own (see ChunkingHandler::OnScte35Event's own
-        // doc comment) - registering it as a cue follower ADDITIONALLY lets the coordinator tighten
-        // its segmentation from video's own realized splice cut once that's known, as a secondary
-        // correction on top of its own immediate reaction above (see
-        // SegmentCoordinator::RegisterCueFollower's own doc comment).
+        // Deliberately audio-exclusive (previously: EVERY stream, including audio, also
+        // registered as an immediate receiver - see RegisterScte35ImmediateReceiver's own doc
+        // comment for why that used to be considered necessary, and its cost). Audio has no
+        // keyframe concept of its own (every AAC/ADTS sample is trivially is_key_frame()==true -
+        // see es_parser_audio.cc), so an immediate reaction to the raw event cuts it on its own
+        // very next sample - close to, but not exactly at, the real splice point, and then a
+        // second, later correction from the cue-follower path below (once video's own realized
+        // cut is known) used to force yet another premature cut to tighten it further. That
+        // produced two or three progressively-corrected audio fragments per splice where video
+        // only ever needed one - a real, confirmed discrepancy from every other HLS/CMAF encoder
+        // this was checked against (a reference multi-CDN live feed keeps audio's own
+        // EXT-X-MEDIA-SEQUENCE numerically identical to video's, segment-for-segment, through
+        // every splice - this fork's own output did not).
+        //
+        // Registering audio ONLY as a cue follower - driven by video's own *realized* cut, once
+        // known, instead of reacting to the raw event itself at all - removes those extra
+        // fragments entirely: audio now cuts exactly once per splice, at video's own cut
+        // timestamp, matching its segment count exactly. The cost is real and was the reason
+        // immediate reaction was added in the first place: audio's own cut now lands up to a
+        // full segment_duration after the true splice point (the same ~1 segment_duration lag
+        // RegisterScte35ImmediateReceiver's own doc comment measured and rejected this for) -
+        // meaning the wrong track's audio can play under the right track's video for up to that
+        // long at a live ad boundary. Chosen deliberately, trading that latency for exact
+        // segment-count parity with the reference encoder.
         if (stream.stream_selector == "audio") {
           segment_coordinator->RegisterCueFollower(stream_index, chunking_handler);
+        } else {
+          segment_coordinator->RegisterScte35ImmediateReceiver(chunking_handler);
         }
         Status enc_handler_status;
         handlers.emplace_back(CreateEncryptionHandler(packaging_params, stream,
