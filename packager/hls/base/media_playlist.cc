@@ -943,6 +943,22 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
      //for (auto iter = scte35_events_.begin(); iter != scte35_events_.end(); ++iter) {
       if (iter.timestamp <= start_time){
         if (iter.duration >= 0){
+          if (current_Scte35_.duration > 0 && current_Scte35_.id != iter.id) {
+            // A new cue-out arrived for a different event before this break's own cue-in/
+            // auto-return ever closed it out (e.g. two overlapping avail requests, or a
+            // broadcast automation system starting a new avail early) - confirmed live:
+            // without this, current_Scte35_ below gets silently overwritten and the superseded
+            // break is left with no closing signal at all, ever (not even the synthetic
+            // fallback further down, since inserted_cue is about to be set true for this exact
+            // segment, and current_Scte35_ won't refer to the old break on any later one
+            // either) - an HLS client, or a downstream ad-decisioning system that already
+            // committed resources to the first break's own declared duration, would never see
+            // it end. Emit its CUE-IN now, at the exact instant the new break starts, before
+            // opening the new one.
+            LOG(INFO) << "HLS: XCueIn (implicit - superseded by new cue-out id=" << iter.id
+                      << ") for event " << current_Scte35_.id << std::endl;
+            AddXCueIn(current_Scte35_);
+          }
           current_Scte35_ = iter;
           // Anchor the synthetic-close threshold (below) and the CUE-CONT
           // "passed" calculation to the segment start_time at which this

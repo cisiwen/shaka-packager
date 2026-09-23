@@ -1683,6 +1683,65 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeNotDuplicatedOnCueOutSegmen
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
 }
 
+// Regression test for a real bug found live: a second cue-out for a DIFFERENT event arriving
+// while a previous one's own declared break is still open (e.g. two independent avail requests
+// overlapping) used to silently overwrite current_Scte35_ with no CUE-IN ever emitted for the
+// superseded break - confirmed on a real production manifest, jumping straight from one
+// #EXT-X-CUE-OUT to the next with no closing signal in between at all. AddSegmentInfoEntry must
+// synthesize the missing CUE-IN for the superseded event before opening the new one.
+TEST_F(MediaPlaylistMultiSegmentTest, ImplicitCueInWhenNewCueOutSupersedesOpenBreak) {
+  absl::Time reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  // Event 42: a cue-out 5s in, declaring a 10s break (would naturally run until t=15s).
+  media_playlist_->AddScte35Event(5 * kTimeScale, 10 * kTimeScale, "", 42);
+  media_playlist_->AddSegment("file1.ts", 5 * kTimeScale, 3 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  // Event 43: a second cue-out for a DIFFERENT event, arriving at t=8s - while event 42's own
+  // break is still open (only 3 of its declared 10 seconds have passed).
+  media_playlist_->AddScte35Event(8 * kTimeScale, 5 * kTimeScale, "", 43);
+  media_playlist_->AddSegment("file2.ts", 8 * kTimeScale, 5 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+
+  const char kExpectedOutput[] =
+      "#EXTM3U\n"
+      "#EXT-X-VERSION:6\n"
+      "## Generated with https://github.com/shaka-project/shaka-packager "
+      "version test\n"
+      "#EXT-X-TARGETDURATION:5\n"
+      "#EXT-X-PLAYLIST-TYPE:VOD\n"
+      "#EXT-X-DATERANGE:ID=\"42\",CLASS=\"com.apple.hls.interstitial\","
+      "START-DATE=\"2025-10-12T14:00:05.000Z\",DURATION=10.000,"
+      "X-RESUME-OFFSET=0.000,X-ASSET-URI=\"?duration=10\","
+      "X-TIMELINE-OCCUPIES=\"RANGE\"\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:05.000Z\n"
+      "#EXT-X-CUE-OUT:10.000\n"
+      "#EXTINF:3.000,\n"
+      "file1.ts\n"
+      // Event 42's own break was still open when event 43's cue-out arrived - this implicit
+      // CUE-IN, closing event 42, must appear before event 43's own DATERANGE/CUE-OUT, not be
+      // silently skipped.
+      "#EXT-X-CUE-IN\n"
+      "#EXT-X-DATERANGE:ID=\"43\",CLASS=\"com.apple.hls.interstitial\","
+      "START-DATE=\"2025-10-12T14:00:08.000Z\",DURATION=5.000,"
+      "X-RESUME-OFFSET=0.000,X-ASSET-URI=\"?duration=5\","
+      "X-TIMELINE-OCCUPIES=\"RANGE\"\n"
+      "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:00:08.000Z\n"
+      "#EXT-X-CUE-OUT:5.000\n"
+      "#EXTINF:5.000,\n"
+      "file2.ts\n"
+      "#EXT-X-ENDLIST\n";
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
+}
+
 // Regression test for a bug the previous test couldn't catch: there, the cue-out landed on the
 // very first segment, so is_first_segment's own resync already produced the right value by
 // coincidence. Here the cue-out lands on a LATER segment, with a 2-second PTS gap simulating the
