@@ -32,6 +32,12 @@ void SegmentCoordinator::RegisterCueFollower(
   LOG(INFO) << "SegmentCoordinator[" << this << "]: Registering stream "
             << input_stream_index << " as a cue follower, handler="
             << follower.get();
+  // Hold this follower's very first segment open (same effect as suppressing it mid-stream ahead
+  // of a cue correction - see that method's own doc comment) so OnSegmentInfo's startup alignment
+  // below can close it at the sync source's own real first boundary instead of wherever this
+  // follower's own independent PTS-modulo grid happens to fall. Safe to call here, at pipeline
+  // wiring time: no samples have reached any ChunkingHandler yet.
+  follower->SuppressPeriodicCutsUntilForcedBoundary();
   cue_follower_handlers_[input_stream_index] = std::move(follower);
 }
 
@@ -187,10 +193,23 @@ Status SegmentCoordinator::OnSegmentInfo(
     }
   }
 
-  // Drive cue-follower streams directly, only for a cue-aligned segment (i.e. only when the sync
-  // source actually just cut a segment at a live splice point - see RegisterCueFollower's own
-  // doc comment for why *every* segment isn't relevant here the way it is for teletext).
-  if (info->is_cue_aligned && !cue_follower_handlers_.empty()) {
+  // Drive cue-follower streams directly the instant the sync source's own forced cut actually
+  // happens (ends_at_forced_boundary - see that field's own doc comment for why this reacts to
+  // the segment that *ends* at the boundary rather than waiting for is_cue_aligned on the *next*
+  // segment, which needlessly adds that next segment's own full duration to every follower's
+  // correction latency) - OR, once, unconditionally, for the very first segment the sync source
+  // ever reports at all. That startup case matters because a follower's own periodic grid (raw
+  // PTS modulo segment_duration, anchored at that follower's own arbitrary PTS origin - see
+  // ChunkingHandler::OnMediaSample) shares no common reference with the sync source's own grid
+  // absent this: confirmed live via a real capture with no SCTE-35 activity at all, where video's
+  // and audio's own PROGRAM-DATE-TIME grids sat a stable, non-drifting ~2.4s out of phase for the
+  // whole recording, because nothing had ever forced them onto a shared origin. Doing this once at
+  // startup, the same way a real forced-boundary segment already does, gives both streams the
+  // same absolute grid origin from the very beginning instead of only after the first splice.
+  const bool is_startup_alignment = !has_aligned_followers_at_start_;
+  has_aligned_followers_at_start_ = true;
+  if ((info->ends_at_forced_boundary || is_startup_alignment) &&
+      !cue_follower_handlers_.empty()) {
     auto scale_it = stream_time_scales_.find(input_stream_index);
     if (scale_it == stream_time_scales_.end() || scale_it->second <= 0) {
       LOG(WARNING) << "SegmentCoordinator: missing/invalid time_scale for "
@@ -198,12 +217,20 @@ Status SegmentCoordinator::OnSegmentInfo(
                    << " - cannot drive cue-follower streams";
       return Status::OK;
     }
+    // Startup alignment targets this (the sync source's very first) segment's own START - see
+    // RegisterCueFollower's own doc comment: audio's first segment should start where video's
+    // does. A forced boundary targets this segment's own END instead - that's the real splice
+    // boundary; this segment's start is just wherever it happened to begin, unrelated to the cue.
+    const int64_t target_timestamp = is_startup_alignment
+                                          ? info->start_timestamp
+                                          : info->start_timestamp + info->duration;
     const double event_time_in_seconds =
-        static_cast<double>(info->start_timestamp) / scale_it->second;
+        static_cast<double>(target_timestamp) / scale_it->second;
     for (auto& entry : cue_follower_handlers_) {
       LOG(INFO) << "SegmentCoordinator[" << this
                 << "]: driving cue-follower stream " << entry.first << " to "
-                << event_time_in_seconds << "s (sync source's own realized cut)";
+                << event_time_in_seconds << "s (sync source's own realized "
+                << (is_startup_alignment ? "startup" : "forced-boundary") << ")";
       RETURN_IF_ERROR(entry.second->ForceSegmentBoundaryNow(event_time_in_seconds));
     }
   }

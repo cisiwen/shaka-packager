@@ -151,6 +151,14 @@ class ChunkingHandler : public MediaHandler {
   bool next_segment_cue_aligned_ = false;
   bool current_segment_cue_aligned_ = false;
 
+  // Set immediately before closing out the segment a forced boundary just consumed (i.e. right
+  // before the EndSegmentIfStarted call that fires because pending_forced_boundary_ was true, not
+  // because of an ordinary periodic cut) - stamped onto that segment's own outgoing SegmentInfo as
+  // ends_at_forced_boundary (see that field's own doc comment), then immediately reset so a later,
+  // unrelated segment never inherits it. Distinct from next_/current_segment_cue_aligned_ above,
+  // which mark the *following* segment instead.
+  bool ending_segment_ends_at_forced_boundary_ = false;
+
   // Set by ForceSegmentBoundaryAt to mean "cut unconditionally at the next sample eligible to
   // start a segment" (a real keyframe, when segment_sap_aligned - the default). Deliberately a
   // separate flag from segment_start_time_: an earlier version of this used

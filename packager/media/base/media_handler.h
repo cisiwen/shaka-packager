@@ -64,10 +64,19 @@ struct SegmentInfo {
   bool is_final_chunk_in_seg = false;
   bool is_encrypted = false;
   // True when this segment was the one immediately following a live SCTE-35/CueEvent-forced
-  // boundary (see ChunkingHandler::ForceSegmentBoundaryAt) - lets SegmentCoordinator identify
-  // exactly which of the sync source's segments to propagate to follower streams (e.g. audio
-  // following video's real splice cut), rather than every regular periodic segment.
+  // boundary (see ChunkingHandler::ForceSegmentBoundaryAt) - used for HLS reporting purposes
+  // (e.g. CUE-OUT/CUE-IN placement in media_playlist.cc), not for driving follower streams - see
+  // ends_at_forced_boundary below for that.
   bool is_cue_aligned = false;
+  // True when THIS segment (not the next one - see is_cue_aligned above) is the one that just
+  // closed because of a forced boundary (ChunkingHandler::ForceSegmentBoundaryAt/Now), i.e. this
+  // segment's own end (start_timestamp + duration) IS the real splice boundary. Lets
+  // SegmentCoordinator drive follower streams (e.g. audio following video's real splice cut) the
+  // instant the sync source's own forced cut happens, rather than waiting for the *next* segment
+  // (the is_cue_aligned one) to also fully close - which needlessly adds that next segment's own
+  // full duration to every follower's correction latency, confirmed live as an extra ~1
+  // segment_duration on top of the unavoidable wait for the sync source's own next real keyframe.
+  bool ends_at_forced_boundary = false;
   int64_t start_timestamp = -1;
   int64_t duration = 0;
   int64_t segment_number = 1;

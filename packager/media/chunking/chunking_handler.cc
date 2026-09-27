@@ -231,6 +231,18 @@ Status ChunkingHandler::OnMediaSample(
     const bool periodic_cut_due = (!suppress_periodic_cuts_ || suppression_expired) &&
                                   IsNewSegmentIndex(segment_index, current_segment_index_);
     if (!segment_start_time_ || pending_forced_boundary_ || periodic_cut_due) {
+      // Distinct from the block's own entry condition above: a stream's very first-ever sample
+      // (!segment_start_time_) also enters this block, but nothing has actually been cut yet -
+      // it's just the moment this stream's first (potentially suppressed) segment starts
+      // accumulating. Confirmed live via a real capture: clearing suppress_periodic_cuts_
+      // unconditionally on every entry into this block - as an earlier version of this did - let
+      // that first-sample entry silently clear it before SuppressPeriodicCutsUntilForcedBoundary's
+      // real correction ever arrived, so the very next periodic grid crossing cut early and
+      // produced an extra, unwanted short segment ahead of the real one. Only an entry that
+      // actually represents a cut (a real forced boundary, or a periodic cut that was itself
+      // allowed through because suppression was already off/expired) should end the suppression
+      // wait - not the act of starting the very segment that wait is protecting.
+      const bool is_real_cut = pending_forced_boundary_ || periodic_cut_due;
       if (pending_forced_boundary_) {
         // Re-anchor the periodic grid to the instant this forced cut actually happens, not the
         // (possibly much earlier - a cue-follower's correction can arrive up to ~1
@@ -248,6 +260,11 @@ Status ChunkingHandler::OnMediaSample(
       // Reset subsegment index.
       current_subsegment_index_ = 0;
 
+      // The segment EndSegmentIfStarted is about to close (not the one starting right now) is the
+      // one that ends at the real splice boundary, exactly when a forced boundary is what's
+      // driving this cut - see ends_at_forced_boundary's own doc comment for why this is stamped
+      // on the closing segment rather than (as is_cue_aligned already does) the next one.
+      ending_segment_ends_at_forced_boundary_ = pending_forced_boundary_;
       RETURN_IF_ERROR(EndSegmentIfStarted());
       segment_start_time_ = timestamp;
       subsegment_start_time_ = timestamp;
@@ -256,10 +273,14 @@ Status ChunkingHandler::OnMediaSample(
       // Consumed: this sample is the real next one eligible to start a segment after a cue, so
       // the wait is over - see pending_forced_boundary_'s own doc comment.
       pending_forced_boundary_ = false;
-      // Whether this cut the wait actually ended on (a real correction) or the safety valve
-      // firing instead, the wait itself is over either way.
-      suppress_periodic_cuts_ = false;
-      suppress_periodic_cuts_started_at_ = std::nullopt;
+      if (is_real_cut) {
+        // Whether this cut the wait actually ended on (a real correction) or the safety valve
+        // firing instead, the wait itself is over either way - but only when a cut genuinely
+        // happened. See is_real_cut's own doc comment above for why this must NOT also fire on a
+        // stream's very first-ever sample, which enters this same block without cutting anything.
+        suppress_periodic_cuts_ = false;
+        suppress_periodic_cuts_started_at_ = std::nullopt;
+      }
       // Latches whatever ForceSegmentBoundaryAt set for the segment that just ended (consumed by
       // EndSegmentIfStarted just above, using the *previous* value) onto the segment starting
       // right now, so it's this one - not the one that just ended - that gets marked
@@ -331,11 +352,14 @@ Status ChunkingHandler::EndSegmentIfStarted() {
   segment_info->segment_number = segment_number_++;
   segment_info->is_cue_aligned = current_segment_cue_aligned_;
   current_segment_cue_aligned_ = false;
+  segment_info->ends_at_forced_boundary = ending_segment_ends_at_forced_boundary_;
+  ending_segment_ends_at_forced_boundary_ = false;
 
   LOG(INFO) << "ChunkingHandler[" << this << "]: EndSegmentIfStarted segment_number="
             << segment_info->segment_number << " start=" << unwrapped_start
             << " duration=" << segment_info->duration
-            << " is_cue_aligned=" << segment_info->is_cue_aligned;
+            << " is_cue_aligned=" << segment_info->is_cue_aligned
+            << " ends_at_forced_boundary=" << segment_info->ends_at_forced_boundary;
 
   DVLOG(2) << "ChunkingHandler: Segment " << segment_info->segment_number
            << " start=" << unwrapped_start

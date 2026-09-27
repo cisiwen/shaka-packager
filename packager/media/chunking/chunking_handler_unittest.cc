@@ -437,6 +437,77 @@ TEST_F(ChunkingHandlerTest, SuppressPeriodicCutsUntilForcedBoundaryProducesExact
                         !kEncrypted, _)));
 }
 
+// Regression test for a real bug found live: RegisterCueFollower calls
+// SuppressPeriodicCutsUntilForcedBoundary at pipeline wiring time, before this stream's very
+// first-ever sample - unlike the test above, where suppression is applied to an already-open
+// segment (the live SCTE-35/cue-event case). !segment_start_time_ (this stream's first-ever
+// sample) also enters OnMediaSample's cut-handling block, but nothing has actually been cut yet -
+// it's just the moment the (suppressed) first segment starts accumulating. An earlier version of
+// that block cleared suppress_periodic_cuts_ unconditionally on every entry into it, including
+// this one - silently undoing the suppression before the real correction ever arrived, so the very
+// next periodic grid crossing cut early anyway (confirmed live: a real capture produced two short
+// audio segments summing to exactly one segment_duration_, instead of the one full segment this
+// test asserts).
+TEST_F(ChunkingHandlerTest, SuppressBeforeFirstSampleProducesExactlyOneCut) {
+  ChunkingParams chunking_params;
+  chunking_params.segment_duration_in_seconds = 1;
+  SetUpChunkingHandler(1, chunking_params);
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetVideoStreamInfo(kTimeScale1))));
+  ClearOutputStreamDataVector();
+
+  // Suppressed before any sample at all has arrived - matching RegisterCueFollower's real usage.
+  chunking_handler_->SuppressPeriodicCutsUntilForcedBoundary();
+
+  // Deliberately small and close to 0, unlike the test above's kStartTimestamp=12345: suppression
+  // applied before any sample means suppress_periodic_cuts_started_at_ baselines at
+  // max_segment_time_'s own default (0), not some already-elapsed stream position - a starting
+  // timestamp as large as 12345 would immediately exceed kMaxSuppressSegments * segment_duration_
+  // (3000 here) measured from that 0 baseline, firing the safety valve on sample 0 itself and
+  // masking the real bug this test exists to catch.
+  const int64_t kStartTimestamp = 100;
+  // Sample 0 opens the (suppressed) segment for the first time ever.
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp, kDuration, kKeyFrame))));
+
+  // Samples 1-4 span two of this stream's own regular segment_duration_-sized grid lines. None
+  // should cut on their own - the segment must stay open, extending through all of them, exactly
+  // as the already-open-segment case above does.
+  for (int i = 1; i <= 4; ++i) {
+    ASSERT_OK(Process(StreamData::FromMediaSample(
+        kStreamIndex, GetMediaSample(kStartTimestamp + kDuration * i,
+                                     kDuration, kKeyFrame))));
+  }
+
+  // The real correction finally arrives, driven by the sync source's own realized cut.
+  const double kCorrectionTimeInSeconds =
+      static_cast<double>(kStartTimestamp + kDuration * 5) / kTimeScale1;
+  ASSERT_OK(chunking_handler_->ForceSegmentBoundaryNow(kCorrectionTimeInSeconds));
+
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp + kDuration * 5,
+                                   kDuration, kKeyFrame))));
+
+  EXPECT_THAT(
+      GetOutputStreamDataVector(),
+      ElementsAre(
+          IsMediaSample(kStreamIndex, kStartTimestamp, kDuration, !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 1, kDuration,
+                        !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 2, kDuration,
+                        !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 3, kDuration,
+                        !kEncrypted, _),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 4, kDuration,
+                        !kEncrypted, _),
+          // Exactly one SegmentInfo - covering samples 0-4 in a single segment - not two.
+          IsSegmentInfo(kStreamIndex, kStartTimestamp, kDuration * 5, !kIsSubsegment,
+                        !kEncrypted),
+          IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 5, kDuration,
+                        !kEncrypted, _)));
+}
+
 // Regression test for a real bug found live in the fix above: a cue-follower's correction can
 // arrive up to ~1 segment_duration after the timestamp it was actually requested for (see
 // ForceSegmentBoundaryNow's own doc comment), so by the time it finally triggers a cut, the
