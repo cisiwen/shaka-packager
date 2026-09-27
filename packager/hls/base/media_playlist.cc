@@ -1015,6 +1015,13 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
   bandwidth_estimator_.AddBlock(size, segment_duration_seconds);
   current_buffer_depth_ += segment_duration_seconds;
 
+  // Distinct from the broader is_discontinuity computed below (which also matches a
+  // DiscontinuityEntry inserted for unrelated reasons, e.g. AddEncryptionInfo's own method/key
+  // change - see ProgramDateTimeWithDiscontinuity's own test for a real example where the PTS
+  // timeline does NOT reset): this is specifically a backward jump in start_time itself, the one
+  // real signal that this stream's PTS timeline just restarted (e.g. an encoder reconnect) rather
+  // than just continuing with a mid-stream format change.
+  bool is_pts_timeline_reset = false;
   if (!entries_.empty() &&
       entries_.back()->type() == HlsEntry::EntryType::kExtInf) {
     const SegmentInfoEntry* segment_info =
@@ -1025,6 +1032,7 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
           << segment_info->start_time() << " as the next segment starts at "
           << start_time << ".";
       entries_.emplace_back(new DiscontinuityEntry());
+      is_pts_timeline_reset = true;
     }
   }
 
@@ -1076,6 +1084,24 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     const bool cue_out_just_added =
         !entries_.empty() &&
         entries_.back()->type() == HlsEntry::EntryType::kExtCueOut;
+
+    if (is_pts_timeline_reset) {
+      // reference_time_ is set once, at session start (SimpleHlsNotifier's constructor), and nothing
+      // ever refreshes it afterwards - fine for a PTS gap that's still on the same timeline (a forced
+      // SCTE-35 cut, handled above without a discontinuity tag at all, or a discontinuity inserted for
+      // an unrelated reason like an encryption change - see is_pts_timeline_reset's own doc comment),
+      // but wrong here: start_time just jumped backward, meaning this stream's PTS timeline itself
+      // restarted (e.g. an encoder dropped out and reconnected, without this packager process itself
+      // being restarted, so it never got a fresh reference_time_ the way a brand new process would) -
+      // start_time is now small again while real elapsed wall-clock time is not. Recomputing from the
+      // OLD reference_time_ would collapse PROGRAM-DATE-TIME back toward the original session start
+      // instead of reflecting actual current time. Re-anchoring reference_time_ itself here, to
+      // exactly cancel out against this same segment's start_time below, is what makes this segment's
+      // resync (and everything computed from reference_time_ afterwards, including future SCTE-35
+      // cue tags) reflect real time again.
+      reference_time_ = absl::Now() -
+                         absl::Seconds(static_cast<double>(start_time) / time_scale_);
+    }
 
     if (is_first_segment || is_discontinuity || cue_out_just_added ||
         next_program_date_time_ == absl::InfinitePast()) {

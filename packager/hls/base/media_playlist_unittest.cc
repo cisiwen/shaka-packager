@@ -1491,6 +1491,72 @@ TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeWithDiscontinuity) {
   ASSERT_FILE_STREQ(kMemoryFilePath, kExpectedOutput);
 }
 
+// Regression test: a genuine backward jump in start_time (this stream's PTS timeline itself
+// restarting - e.g. an encoder reconnecting without this packager process being restarted, so it
+// never gets a fresh reference_time_ the way a brand new process would) must re-anchor
+// reference_time_ to real current time, not silently recompute from the stale, session-old
+// reference_time_ - which would otherwise collapse PROGRAM-DATE-TIME back toward the original
+// session start instead of reflecting actual current time. Confirmed live and in isolated
+// reproduction as a real gap (see media_playlist.cc's own doc comment on is_pts_timeline_reset).
+TEST_F(MediaPlaylistMultiSegmentTest, ProgramDateTimeReanchorsOnPtsTimelineReset) {
+  mutable_hls_params()->add_program_date_time = true;
+
+  // Deliberately an old, clearly-artificial reference time far from whenever this test actually
+  // runs - if the bug regresses, file2's tag will come back computed from THIS stale reference
+  // (some time in October 2025) rather than from real current time, and the test's tolerance
+  // check below will fail loudly instead of silently coincidentally passing.
+  absl::Time stale_reference_time;
+  std::string err;
+  bool ok = absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", "2025-10-12T14:00:00.000Z",
+                            &stale_reference_time, &err);
+  ASSERT_TRUE(ok) << err;
+  media_playlist_->SetReferenceTime(stale_reference_time);
+
+  ASSERT_TRUE(media_playlist_->SetMediaInfo(valid_video_media_info_));
+  media_playlist_->AddSegment("file1.ts", 100 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  const absl::Time before_reset = absl::Now();
+  // A genuine backward jump - file2 starts well before file1 did - simulating an encoder
+  // reconnecting with a fresh, independent PTS timeline.
+  media_playlist_->AddSegment("file2.ts", 5 * kTimeScale, 10 * kTimeScale,
+                              kZeroByteOffset, kMBytes);
+  const absl::Time after_reset = absl::Now();
+
+  const char kMemoryFilePath[] = "memory://media.m3u8";
+  EXPECT_TRUE(media_playlist_->WriteToFile(kMemoryFilePath, false, true));
+  std::string content;
+  ASSERT_TRUE(File::ReadFileToString(kMemoryFilePath, &content));
+
+  // file1's own tag is untouched by this fix - still computed from the original, stale reference.
+  EXPECT_THAT(content, ::testing::HasSubstr(
+                           "#EXT-X-PROGRAM-DATE-TIME:2025-10-12T14:01:40.000Z\n"
+                           "#EXTINF:10.000,\n"
+                           "file1.ts\n"
+                           "#EXT-X-DISCONTINUITY\n"));
+
+  const std::string kProgramDateTimeTag = "#EXT-X-PROGRAM-DATE-TIME:";
+  const size_t discontinuity_pos = content.find("#EXT-X-DISCONTINUITY\n");
+  ASSERT_NE(discontinuity_pos, std::string::npos);
+  const size_t tag_pos = content.find(kProgramDateTimeTag, discontinuity_pos);
+  ASSERT_NE(tag_pos, std::string::npos);
+  const size_t tag_value_pos = tag_pos + kProgramDateTimeTag.size();
+  const size_t tag_end_pos = content.find('\n', tag_value_pos);
+  const std::string file2_tag =
+      content.substr(tag_value_pos, tag_end_pos - tag_value_pos);
+
+  absl::Time file2_program_date_time;
+  ASSERT_TRUE(absl::ParseTime("%Y-%m-%dT%H:%M:%E3SZ", file2_tag,
+                              &file2_program_date_time, &err))
+      << err;
+
+  // file2's tag must reflect real current time (bracketed by before/after absl::Now() calls
+  // around the AddSegment call that triggered the reset), NOT the stale reference - which would
+  // put it around 2025-10-12T14:00:05.000Z instead, over a year off from whenever this test
+  // actually runs.
+  EXPECT_GE(file2_program_date_time, before_reset - absl::Seconds(1));
+  EXPECT_LE(file2_program_date_time, after_reset + absl::Seconds(1));
+}
+
 // Verifies every segment gets its own PROGRAM-DATE-TIME tag (not just the first one and ones
 // after a discontinuity), so a player looking at any single visible segment (e.g. after others
 // have rolled off a live sliding-window playlist) always has its own real wall-clock anchor with
