@@ -943,6 +943,22 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
      //for (auto iter = scte35_events_.begin(); iter != scte35_events_.end(); ++iter) {
       if (iter.timestamp <= start_time){
         if (iter.duration >= 0){
+          if (current_Scte35_.duration > 0 && current_Scte35_.id != iter.id) {
+            // A new cue-out arrived for a different event before this break's own cue-in/
+            // auto-return ever closed it out (e.g. two overlapping avail requests, or a
+            // broadcast automation system starting a new avail early) - confirmed live:
+            // without this, current_Scte35_ below gets silently overwritten and the superseded
+            // break is left with no closing signal at all, ever (not even the synthetic
+            // fallback further down, since inserted_cue is about to be set true for this exact
+            // segment, and current_Scte35_ won't refer to the old break on any later one
+            // either) - an HLS client, or a downstream ad-decisioning system that already
+            // committed resources to the first break's own declared duration, would never see
+            // it end. Emit its CUE-IN now, at the exact instant the new break starts, before
+            // opening the new one.
+            LOG(INFO) << "HLS: XCueIn (implicit - superseded by new cue-out id=" << iter.id
+                      << ") for event " << current_Scte35_.id << std::endl;
+            AddXCueIn(current_Scte35_);
+          }
           current_Scte35_ = iter;
           // Anchor the synthetic-close threshold (below) and the CUE-CONT
           // "passed" calculation to the segment start_time at which this
@@ -999,6 +1015,13 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
   bandwidth_estimator_.AddBlock(size, segment_duration_seconds);
   current_buffer_depth_ += segment_duration_seconds;
 
+  // Distinct from the broader is_discontinuity computed below (which also matches a
+  // DiscontinuityEntry inserted for unrelated reasons, e.g. AddEncryptionInfo's own method/key
+  // change - see ProgramDateTimeWithDiscontinuity's own test for a real example where the PTS
+  // timeline does NOT reset): this is specifically a backward jump in start_time itself, the one
+  // real signal that this stream's PTS timeline just restarted (e.g. an encoder reconnect) rather
+  // than just continuing with a mid-stream format change.
+  bool is_pts_timeline_reset = false;
   if (!entries_.empty() &&
       entries_.back()->type() == HlsEntry::EntryType::kExtInf) {
     const SegmentInfoEntry* segment_info =
@@ -1009,6 +1032,7 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
           << segment_info->start_time() << " as the next segment starts at "
           << start_time << ".";
       entries_.emplace_back(new DiscontinuityEntry());
+      is_pts_timeline_reset = true;
     }
   }
 
@@ -1060,6 +1084,24 @@ void MediaPlaylist::AddSegmentInfoEntry(const std::string& segment_file_name,
     const bool cue_out_just_added =
         !entries_.empty() &&
         entries_.back()->type() == HlsEntry::EntryType::kExtCueOut;
+
+    if (is_pts_timeline_reset) {
+      // reference_time_ is set once, at session start (SimpleHlsNotifier's constructor), and nothing
+      // ever refreshes it afterwards - fine for a PTS gap that's still on the same timeline (a forced
+      // SCTE-35 cut, handled above without a discontinuity tag at all, or a discontinuity inserted for
+      // an unrelated reason like an encryption change - see is_pts_timeline_reset's own doc comment),
+      // but wrong here: start_time just jumped backward, meaning this stream's PTS timeline itself
+      // restarted (e.g. an encoder dropped out and reconnected, without this packager process itself
+      // being restarted, so it never got a fresh reference_time_ the way a brand new process would) -
+      // start_time is now small again while real elapsed wall-clock time is not. Recomputing from the
+      // OLD reference_time_ would collapse PROGRAM-DATE-TIME back toward the original session start
+      // instead of reflecting actual current time. Re-anchoring reference_time_ itself here, to
+      // exactly cancel out against this same segment's start_time below, is what makes this segment's
+      // resync (and everything computed from reference_time_ afterwards, including future SCTE-35
+      // cue tags) reflect real time again.
+      reference_time_ = absl::Now() -
+                         absl::Seconds(static_cast<double>(start_time) / time_scale_);
+    }
 
     if (is_first_segment || is_discontinuity || cue_out_just_added ||
         next_program_date_time_ == absl::InfinitePast()) {

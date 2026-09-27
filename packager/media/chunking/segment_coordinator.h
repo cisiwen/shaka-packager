@@ -76,19 +76,30 @@ class SegmentCoordinator : public MediaHandler {
   /// ChunkingHandler::ForceSegmentBoundaryNow, a plain method call outside the normal
   /// StreamData/Process() graph) whenever the sync source stream (see sync_source_stream_index_)
   /// reports a cue-aligned SegmentInfo (see that field's own doc comment) - i.e. whenever the sync
-  /// source *actually* cuts a segment at a live SCTE-35/CueEvent splice point.
+  /// source *actually* cuts a segment at a live SCTE-35/CueEvent splice point - AND once,
+  /// unconditionally, the very first time the sync source reports any SegmentInfo at all (see
+  /// OnSegmentInfo's own doc comment on has_aligned_followers_at_start_).
   ///
   /// Unlike MarkAsTeletextStream/teletext replication (every single segment boundary, used to let
   /// a stream with no independent chunking of its own follow the sync source unconditionally),
-  /// this only fires at cue points, and follower is expected to keep doing its own normal
-  /// independent periodic chunking otherwise (already correct and already matches the sync source
-  /// closely in steady state) - it exists purely to remove the *cue-triggered* segmentation race
-  /// between two independent ChunkingHandler instances each reacting to their own copy of the
-  /// same live SCTE-35 event, which real deployment testing showed drifting apart by anywhere
-  /// from ~150ms to a full missed GOP (video's own forced-keyframe timing isn't deterministic, and
-  /// two independent decisions reacting to the "same" event on separate threads can still land in
-  /// different places). Deriving follower's cut directly from the sync source's own *realized*
-  /// cut timestamp, once it's actually known, removes that race entirely rather than narrowing it.
+  /// this only fires at cue points (plus that one startup alignment), and follower is expected to
+  /// keep doing its own normal independent periodic chunking the rest of the time. The cue-point
+  /// case exists purely to remove the *cue-triggered* segmentation race between two independent
+  /// ChunkingHandler instances each reacting to their own copy of the same live SCTE-35 event,
+  /// which real deployment testing showed drifting apart by anywhere from ~150ms to a full missed
+  /// GOP (video's own forced-keyframe timing isn't deterministic, and two independent decisions
+  /// reacting to the "same" event on separate threads can still land in different places).
+  /// Deriving follower's cut directly from the sync source's own *realized* cut timestamp, once
+  /// it's actually known, removes that race entirely rather than narrowing it.
+  ///
+  /// Immediately suppresses follower's own periodic cuts (ForceSegmentBoundaryNow's own doc
+  /// comment on SuppressPeriodicCutsUntilForcedBoundary) so its very first segment stays open,
+  /// same as it would mid-stream waiting for a cue correction, until the startup alignment above
+  /// closes it at the sync source's own real first boundary instead of wherever follower's own
+  /// independent PTS-modulo grid happened to fall - see OnSegmentInfo's own doc comment for why
+  /// that grid is otherwise permanently out of phase with the sync source's, confirmed live via
+  /// two tracks whose PROGRAM-DATE-TIME grids sat a stable ~2.4s apart for an entire capture with
+  /// no splice ever firing to correct it.
   ///
   /// This should be called during pipeline setup before processing begins, same as
   /// MarkAsTeletextStream.
@@ -204,6 +215,21 @@ class SegmentCoordinator : public MediaHandler {
   /// ensuring consistent alignment even when video and audio have different
   /// segment boundaries.
   std::optional<size_t> sync_source_stream_index_;
+
+  /// One-shot latch: false until the sync source's very first SegmentInfo has been used to drive
+  /// cue-follower streams (see OnSegmentInfo). Without this, a follower's own periodic chunking
+  /// grid (raw PTS modulo segment_duration, anchored at that follower's own arbitrary PTS origin
+  /// - see ChunkingHandler::OnMediaSample) shares no common reference with the sync source's own
+  /// grid, so absent an actual splice to force the two into alignment, they simply sit at
+  /// whatever relative phase their independent PTS origins happen to produce, forever - confirmed
+  /// live via a real capture with no SCTE-35 activity at all, where video's and audio's own
+  /// PROGRAM-DATE-TIME grids sat a stable, non-drifting ~2.4s out of phase for the whole
+  /// recording. Treating the sync source's first-ever segment the same way a cue-aligned one is
+  /// already treated - driving every registered follower to that segment's own realized start,
+  /// exactly once - gives both streams the same absolute grid origin from the very start of the
+  /// stream, with no new "global clock" concept needed: it reuses the same
+  /// ForceSegmentBoundaryNow/cue_offset_ re-anchoring already shipped and tested for live splices.
+  bool has_aligned_followers_at_start_ = false;
 };
 
 }  // namespace media

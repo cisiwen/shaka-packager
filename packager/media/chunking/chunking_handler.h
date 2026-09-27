@@ -59,6 +59,25 @@ class ChunkingHandler : public MediaHandler {
   // own realized cut removes that independent-decision race entirely.
   Status ForceSegmentBoundaryNow(double event_time_in_seconds);
 
+  // Tells this stream "a live splice just happened somewhere - stop cutting on your own regular
+  // periodic grid until told the real cut point" without yet knowing what that point is. For a
+  // stream registered as a cue-follower (see SegmentCoordinator::RegisterCueFollower), the real
+  // ForceSegmentBoundaryNow call carrying that point doesn't arrive until the sync source's own
+  // cue-aligned segment has fully closed - by construction, up to a full segment_duration after
+  // this call. Left to its own independent periodic chunking in the meantime (the original,
+  // still-default behavior for a cue-follower - see that registration's own doc comment), this
+  // stream almost always fits in one more of its own regular cuts before the real correction
+  // lands, leaving a small leftover fragment between the two where the sync source only ever
+  // needed one clean cut - confirmed live: a reference multi-CDN encoder this was checked
+  // against never produces that extra fragment, keeping this stream's own segment count exactly
+  // matching the sync source's, splice after splice. Suppressing the regular grid here for the
+  // wait removes that fragment: this stream's current segment simply keeps extending (exactly
+  // like ForceSegmentBoundaryAt's own pending_forced_boundary_ already does once the real cut is
+  // known) until that real cut arrives, cutting exactly once, in one place, like the sync source
+  // did. Bounded by suppress_periodic_cuts_'s own doc comment so a lost/late correction can't
+  // grow a segment unboundedly.
+  void SuppressPeriodicCutsUntilForcedBoundary();
+
  protected:
   /// @name MediaHandler implementation overrides.
   /// @{
@@ -131,6 +150,43 @@ class ChunkingHandler : public MediaHandler {
   // inherits the flag.
   bool next_segment_cue_aligned_ = false;
   bool current_segment_cue_aligned_ = false;
+
+  // Set immediately before closing out the segment a forced boundary just consumed (i.e. right
+  // before the EndSegmentIfStarted call that fires because pending_forced_boundary_ was true, not
+  // because of an ordinary periodic cut) - stamped onto that segment's own outgoing SegmentInfo as
+  // ends_at_forced_boundary (see that field's own doc comment), then immediately reset so a later,
+  // unrelated segment never inherits it. Distinct from next_/current_segment_cue_aligned_ above,
+  // which mark the *following* segment instead.
+  bool ending_segment_ends_at_forced_boundary_ = false;
+
+  // Set by ForceSegmentBoundaryAt to mean "cut unconditionally at the next sample eligible to
+  // start a segment" (a real keyframe, when segment_sap_aligned - the default). Deliberately a
+  // separate flag from segment_start_time_: an earlier version of this used
+  // segment_start_time_ = std::nullopt itself as the "force" signal, which meant every sample
+  // that arrived while still waiting for that next keyframe (a live splice point almost never
+  // lands exactly on one) fell into OnMediaSample's "discard samples before segment start"
+  // branch below and was silently lost - up to a full partial GOP's worth of real video per cue,
+  // confirmed via direct ffprobe frame-level analysis comparing the raw pre-Packager stream
+  // (continuous) against Packager's own packaged output (a real gap at every cue-forced
+  // boundary). segment_start_time_ now stays exactly as a normal periodic boundary leaves it -
+  // still valid, still describing the segment that's logically about to close - so every
+  // in-between sample keeps flowing into it (correctly extending its own duration) instead of
+  // vanishing, right up until the real keyframe finally arrives and both this flag and
+  // segment_start_time_ are consumed/reset together, atomically, exactly as
+  // IsNewSegmentIndex(...) already does for an ordinary (non-cue) boundary.
+  bool pending_forced_boundary_ = false;
+
+  // Set by SuppressPeriodicCutsUntilForcedBoundary, cleared the moment a forced boundary is
+  // finally consumed (same instant pending_forced_boundary_ is cleared) - see that method's own
+  // doc comment for why this exists. While true, OnMediaSample's periodic (IsNewSegmentIndex)
+  // check is skipped entirely; pending_forced_boundary_'s own unconditional cut still applies
+  // normally, so this never blocks the real, eventual correction - only this stream's own
+  // interim periodic cuts. suppress_periodic_cuts_started_at_ bounds how long that skip can
+  // last: if a correction is lost or badly delayed, forcing the next periodic cut through anyway
+  // after kMaxSuppressSeconds (a generous multiple of a normal wait) trades a possible one-time
+  // small fragment for never growing a segment unboundedly.
+  bool suppress_periodic_cuts_ = false;
+  std::optional<int64_t> suppress_periodic_cuts_started_at_;
 
   // Unwraps 33-bit PTS/DTS timestamps to 64-bit monotonically increasing
   // values, handling wrap-around at 2^33. This ensures SegmentInfo timestamps

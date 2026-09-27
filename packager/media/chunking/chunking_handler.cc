@@ -28,6 +28,12 @@ namespace media {
 namespace {
 const size_t kStreamIndex = 0;
 
+// Safety valve for SuppressPeriodicCutsUntilForcedBoundary: a normal wait for a cue-follower's
+// real correction is about one segment_duration (see that method's own doc comment). Bounding
+// the suppression at several times that generous normal wait means a lost or badly delayed
+// correction costs at most one oversized segment instead of growing one unboundedly forever.
+const int64_t kMaxSuppressSegments = 3;
+
 bool IsNewSegmentIndex(int64_t new_index, int64_t current_index) {
   return new_index != current_index &&
          // Index is calculated from pts, which could decrease. We do not expect
@@ -95,7 +101,9 @@ Status ChunkingHandler::OnStreamInfo(std::shared_ptr<const StreamInfo> info) {
 }
 
 Status ChunkingHandler::OnCueEvent(std::shared_ptr<const CueEvent> event) {
-  RETURN_IF_ERROR(EndSegmentIfStarted());
+  // Do NOT EndSegmentIfStarted() here - see ForceSegmentBoundaryAt's own doc comment for why the
+  // currently-open segment must stay open (and keep accepting samples) until the next sample
+  // actually eligible to start a fresh one arrives, instead of being closed out immediately.
   const double event_time_in_seconds = event->time_in_seconds;
   RETURN_IF_ERROR(DispatchCueEvent(kStreamIndex, std::move(event)));
   ForceSegmentBoundaryAt(event_time_in_seconds);
@@ -103,11 +111,15 @@ Status ChunkingHandler::OnCueEvent(std::shared_ptr<const CueEvent> event) {
 }
 
 void ChunkingHandler::ForceSegmentBoundaryAt(double event_time_in_seconds) {
-  // Force start new segment after cue event.
-  segment_start_time_ = std::nullopt;
   // |cue_offset_| will be applied to sample timestamp so the segment after cue
   // point have duration ~= |segment_duration_|.
   cue_offset_ = event_time_in_seconds * time_scale_;
+  // Force a cut at the next sample eligible to start a segment (see pending_forced_boundary_'s
+  // own doc comment for why this - not segment_start_time_ = std::nullopt - is the right way to
+  // signal that: this leaves the currently-open segment exactly as-is, so every sample that
+  // arrives before that next eligible one keeps flowing into it normally instead of being
+  // discarded).
+  pending_forced_boundary_ = true;
   // Marks the segment that's about to start (whenever OnMediaSample next actually starts one) so
   // its eventual SegmentInfo carries is_cue_aligned - see that field's own doc comment.
   next_segment_cue_aligned_ = true;
@@ -176,9 +188,22 @@ Status ChunkingHandler::ForceSegmentBoundaryNow(double event_time_in_seconds) {
             << event_time_in_seconds << "s), segment_start_time_="
             << (segment_start_time_ ? *segment_start_time_ : -1)
             << " max_segment_time_=" << max_segment_time_;
-  RETURN_IF_ERROR(EndSegmentIfStarted());
+  // Do NOT EndSegmentIfStarted() here - see ForceSegmentBoundaryAt's own doc comment.
   ForceSegmentBoundaryAt(event_time_in_seconds);
   return Status::OK;
+}
+
+void ChunkingHandler::SuppressPeriodicCutsUntilForcedBoundary() {
+  if (pending_forced_boundary_) {
+    // A forced boundary is already pending (e.g. this stream is also directly registered as an
+    // immediate SCTE-35 receiver) - nothing left to suppress.
+    return;
+  }
+  suppress_periodic_cuts_ = true;
+  // max_segment_time_ is the latest stream-time position actually seen so far - the natural
+  // origin for measuring how long this suppression has been in effect against future samples'
+  // own timestamps (see kMaxSuppressSegments's own doc comment).
+  suppress_periodic_cuts_started_at_ = max_segment_time_;
 }
 
 Status ChunkingHandler::OnMediaSample(
@@ -194,17 +219,68 @@ Status ChunkingHandler::OnMediaSample(
     const int64_t segment_index =
         timestamp < cue_offset_ ? 0
                                 : (timestamp - cue_offset_) / segment_duration_;
-    if (!segment_start_time_ ||
-        IsNewSegmentIndex(segment_index, current_segment_index_)) {
-      current_segment_index_ = segment_index;
+    // suppress_periodic_cuts_ inhibits only the periodic (IsNewSegmentIndex) check below - a
+    // pending_forced_boundary_ still cuts unconditionally regardless, so the real correction
+    // this is waiting for is never itself blocked. suppression_expired is the safety valve (see
+    // kMaxSuppressSegments's own doc comment): past that bound, fall through to the normal
+    // periodic check anyway rather than let this segment grow forever.
+    const bool suppression_expired =
+        suppress_periodic_cuts_ && suppress_periodic_cuts_started_at_ &&
+        (timestamp - suppress_periodic_cuts_started_at_.value()) >=
+            kMaxSuppressSegments * segment_duration_;
+    const bool periodic_cut_due = (!suppress_periodic_cuts_ || suppression_expired) &&
+                                  IsNewSegmentIndex(segment_index, current_segment_index_);
+    if (!segment_start_time_ || pending_forced_boundary_ || periodic_cut_due) {
+      // Distinct from the block's own entry condition above: a stream's very first-ever sample
+      // (!segment_start_time_) also enters this block, but nothing has actually been cut yet -
+      // it's just the moment this stream's first (potentially suppressed) segment starts
+      // accumulating. Confirmed live via a real capture: clearing suppress_periodic_cuts_
+      // unconditionally on every entry into this block - as an earlier version of this did - let
+      // that first-sample entry silently clear it before SuppressPeriodicCutsUntilForcedBoundary's
+      // real correction ever arrived, so the very next periodic grid crossing cut early and
+      // produced an extra, unwanted short segment ahead of the real one. Only an entry that
+      // actually represents a cut (a real forced boundary, or a periodic cut that was itself
+      // allowed through because suppression was already off/expired) should end the suppression
+      // wait - not the act of starting the very segment that wait is protecting.
+      const bool is_real_cut = pending_forced_boundary_ || periodic_cut_due;
+      if (pending_forced_boundary_) {
+        // Re-anchor the periodic grid to the instant this forced cut actually happens, not the
+        // (possibly much earlier - a cue-follower's correction can arrive up to ~1
+        // segment_duration late, see kMaxSuppressSegments's own doc comment) instant it was
+        // originally requested for. Without this, segment_index above is computed against a
+        // stale cue_offset_ that may already be most of the way through its own grid cell by the
+        // time this cut actually happens - confirmed live: the very next sample after a forced
+        // cut immediately crossed into the next periodic segment_index anyway, producing an
+        // unwanted second, tiny segment right after the one this was supposed to produce.
+        cue_offset_ = timestamp;
+        current_segment_index_ = 0;
+      } else {
+        current_segment_index_ = segment_index;
+      }
       // Reset subsegment index.
       current_subsegment_index_ = 0;
 
+      // The segment EndSegmentIfStarted is about to close (not the one starting right now) is the
+      // one that ends at the real splice boundary, exactly when a forced boundary is what's
+      // driving this cut - see ends_at_forced_boundary's own doc comment for why this is stamped
+      // on the closing segment rather than (as is_cue_aligned already does) the next one.
+      ending_segment_ends_at_forced_boundary_ = pending_forced_boundary_;
       RETURN_IF_ERROR(EndSegmentIfStarted());
       segment_start_time_ = timestamp;
       subsegment_start_time_ = timestamp;
       max_segment_time_ = timestamp + sample->duration();
       started_new_segment = true;
+      // Consumed: this sample is the real next one eligible to start a segment after a cue, so
+      // the wait is over - see pending_forced_boundary_'s own doc comment.
+      pending_forced_boundary_ = false;
+      if (is_real_cut) {
+        // Whether this cut the wait actually ended on (a real correction) or the safety valve
+        // firing instead, the wait itself is over either way - but only when a cut genuinely
+        // happened. See is_real_cut's own doc comment above for why this must NOT also fire on a
+        // stream's very first-ever sample, which enters this same block without cutting anything.
+        suppress_periodic_cuts_ = false;
+        suppress_periodic_cuts_started_at_ = std::nullopt;
+      }
       // Latches whatever ForceSegmentBoundaryAt set for the segment that just ended (consumed by
       // EndSegmentIfStarted just above, using the *previous* value) onto the segment starting
       // right now, so it's this one - not the one that just ended - that gets marked
@@ -276,11 +352,14 @@ Status ChunkingHandler::EndSegmentIfStarted() {
   segment_info->segment_number = segment_number_++;
   segment_info->is_cue_aligned = current_segment_cue_aligned_;
   current_segment_cue_aligned_ = false;
+  segment_info->ends_at_forced_boundary = ending_segment_ends_at_forced_boundary_;
+  ending_segment_ends_at_forced_boundary_ = false;
 
   LOG(INFO) << "ChunkingHandler[" << this << "]: EndSegmentIfStarted segment_number="
             << segment_info->segment_number << " start=" << unwrapped_start
             << " duration=" << segment_info->duration
-            << " is_cue_aligned=" << segment_info->is_cue_aligned;
+            << " is_cue_aligned=" << segment_info->is_cue_aligned
+            << " ends_at_forced_boundary=" << segment_info->ends_at_forced_boundary;
 
   DVLOG(2) << "ChunkingHandler: Segment " << segment_info->segment_number
            << " start=" << unwrapped_start
