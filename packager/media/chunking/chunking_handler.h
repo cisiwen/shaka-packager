@@ -176,6 +176,22 @@ class ChunkingHandler : public MediaHandler {
   // IsNewSegmentIndex(...) already does for an ordinary (non-cue) boundary.
   bool pending_forced_boundary_ = false;
 
+  // When set (stream time scale, possibly 33-bit wrapped - always compared modulo the wrap
+  // period), pending_forced_boundary_ does not cut at the very next eligible sample but at the
+  // first eligible sample at or after this time. Without it a forced boundary cut "now" - at
+  // whatever position this stream happened to be at when the request arrived: a follower stream
+  // (audio) driven from the sync source's realized cut would cut early whenever it was still
+  // behind that time (confirmed in a real capture: audio 0.17s ahead of video at every cue), and
+  // repeated copies of one live SCTE-35 event each forced their own extra cut at a keyframe the
+  // splice was never meant for. Unset for events carrying no usable time (an immediate splice),
+  // which keep the original cut-at-the-next-sample behavior.
+  std::optional<int64_t> forced_boundary_gate_;
+
+  // Timestamp (this stream's own, as given to OnMediaSample) of the last cut a forced boundary
+  // actually caused. A request whose gate is not after it has already been realized - typically
+  // the second and third copy of the same event - and is ignored.
+  std::optional<int64_t> last_forced_cut_time_;
+
   // Set by SuppressPeriodicCutsUntilForcedBoundary, cleared the moment a forced boundary is
   // finally consumed (same instant pending_forced_boundary_ is cleared) - see that method's own
   // doc comment for why this exists. While true, OnMediaSample's periodic (IsNewSegmentIndex)

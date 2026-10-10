@@ -7,6 +7,7 @@
 #include <packager/media/chunking/chunking_handler.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -33,6 +34,29 @@ const size_t kStreamIndex = 0;
 // the suppression at several times that generous normal wait means a lost or badly delayed
 // correction costs at most one oversized segment instead of growing one unboundedly forever.
 const int64_t kMaxSuppressSegments = 3;
+
+// A forced boundary requested further ahead than this is treated as carrying no usable time (a
+// stale or corrupt event must never hold a segment open indefinitely) and cuts at the next
+// eligible sample instead, as before.
+const int64_t kMaxForcedBoundaryLeadSeconds = 120;
+
+// MPEG-TS PTS wraps every 2^33 ticks of 90kHz; in a stream's own time scale that is this many
+// ticks. Timestamps reaching a ChunkingHandler are still wrapped, while a boundary derived from
+// another stream's (unwrapped) segment info or from a SCTE-35 time is not necessarily, so
+// comparisons between them are made modulo this period.
+int64_t WrapPeriod(int32_t time_scale) {
+  return static_cast<int64_t>(std::llround(8589934592.0 * time_scale / 90000.0));
+}
+
+// a - b on a circle of the given period, as a signed value in (-period/2, period/2].
+int64_t SignedModDiff(int64_t a, int64_t b, int64_t period) {
+  if (period <= 0)
+    return a - b;
+  int64_t d = ((a - b) % period + period) % period;
+  if (d > period / 2)
+    d -= period;
+  return d;
+}
 
 bool IsNewSegmentIndex(int64_t new_index, int64_t current_index) {
   return new_index != current_index &&
@@ -111,9 +135,36 @@ Status ChunkingHandler::OnCueEvent(std::shared_ptr<const CueEvent> event) {
 }
 
 void ChunkingHandler::ForceSegmentBoundaryAt(double event_time_in_seconds) {
-  // |cue_offset_| will be applied to sample timestamp so the segment after cue
-  // point have duration ~= |segment_duration_|.
-  cue_offset_ = event_time_in_seconds * time_scale_;
+  std::optional<int64_t> gate;
+  if (event_time_in_seconds > 0 && time_scale_ > 0) {
+    gate = static_cast<int64_t>(std::llround(event_time_in_seconds * time_scale_));
+    const int64_t period = WrapPeriod(time_scale_);
+    if (last_forced_cut_time_ &&
+        SignedModDiff(*gate, *last_forced_cut_time_, period) <= 0) {
+      // Already realized by a cut this stream made at or after that time: another copy of the
+      // same event, or a correction for a cut this stream already made on its own.
+      LOG(INFO) << "ChunkingHandler[" << this << "]: ignoring forced boundary at "
+                << event_time_in_seconds << "s, already realized at " << *last_forced_cut_time_
+                << " (stream ticks)";
+      return;
+    }
+    if (max_segment_time_ > 0 &&
+        SignedModDiff(*gate, max_segment_time_, period) >
+            kMaxForcedBoundaryLeadSeconds * static_cast<int64_t>(time_scale_)) {
+      LOG(WARNING) << "ChunkingHandler[" << this << "]: forced boundary at "
+                   << event_time_in_seconds << "s is more than " << kMaxForcedBoundaryLeadSeconds
+                   << "s ahead of this stream; cutting at the next eligible sample instead";
+      gate.reset();
+    }
+  }
+  forced_boundary_gate_ = gate;
+  if (!gate) {
+    // |cue_offset_| will be applied to sample timestamp so the segment after cue
+    // point have duration ~= |segment_duration_|. With a gate the periodic grid is left alone
+    // until the cut actually happens (OnMediaSample re-anchors it then): moving it now would
+    // change when this stream's own regular cuts fall in the meantime.
+    cue_offset_ = event_time_in_seconds * time_scale_;
+  }
   // Force a cut at the next sample eligible to start a segment (see pending_forced_boundary_'s
   // own doc comment for why this - not segment_start_time_ = std::nullopt - is the right way to
   // signal that: this leaves the currently-open segment exactly as-is, so every sample that
@@ -121,8 +172,10 @@ void ChunkingHandler::ForceSegmentBoundaryAt(double event_time_in_seconds) {
   // discarded).
   pending_forced_boundary_ = true;
   // Marks the segment that's about to start (whenever OnMediaSample next actually starts one) so
-  // its eventual SegmentInfo carries is_cue_aligned - see that field's own doc comment.
-  next_segment_cue_aligned_ = true;
+  // its eventual SegmentInfo carries is_cue_aligned - see that field's own doc comment. With a gate
+  // this is set when the cut happens instead, so a regular cut in the meantime is not marked.
+  if (!gate)
+    next_segment_cue_aligned_ = true;
 }
 
 // Live in-band SCTE-35 (parsed from a real MPEG-TS SCTE-35 PID) is a fundamentally different
@@ -230,7 +283,13 @@ Status ChunkingHandler::OnMediaSample(
             kMaxSuppressSegments * segment_duration_;
     const bool periodic_cut_due = (!suppress_periodic_cuts_ || suppression_expired) &&
                                   IsNewSegmentIndex(segment_index, current_segment_index_);
-    if (!segment_start_time_ || pending_forced_boundary_ || periodic_cut_due) {
+    // A pending forced boundary with a gate waits for the first eligible sample at or after the
+    // gate; without one it is ready immediately.
+    const bool forced_boundary_ready =
+        pending_forced_boundary_ &&
+        (!forced_boundary_gate_ ||
+         SignedModDiff(timestamp, *forced_boundary_gate_, WrapPeriod(time_scale_)) >= 0);
+    if (!segment_start_time_ || forced_boundary_ready || periodic_cut_due) {
       // Distinct from the block's own entry condition above: a stream's very first-ever sample
       // (!segment_start_time_) also enters this block, but nothing has actually been cut yet -
       // it's just the moment this stream's first (potentially suppressed) segment starts
@@ -242,8 +301,8 @@ Status ChunkingHandler::OnMediaSample(
       // actually represents a cut (a real forced boundary, or a periodic cut that was itself
       // allowed through because suppression was already off/expired) should end the suppression
       // wait - not the act of starting the very segment that wait is protecting.
-      const bool is_real_cut = pending_forced_boundary_ || periodic_cut_due;
-      if (pending_forced_boundary_) {
+      const bool is_real_cut = forced_boundary_ready || periodic_cut_due;
+      if (forced_boundary_ready) {
         // Re-anchor the periodic grid to the instant this forced cut actually happens, not the
         // (possibly much earlier - a cue-follower's correction can arrive up to ~1
         // segment_duration late, see kMaxSuppressSegments's own doc comment) instant it was
@@ -264,15 +323,21 @@ Status ChunkingHandler::OnMediaSample(
       // one that ends at the real splice boundary, exactly when a forced boundary is what's
       // driving this cut - see ends_at_forced_boundary's own doc comment for why this is stamped
       // on the closing segment rather than (as is_cue_aligned already does) the next one.
-      ending_segment_ends_at_forced_boundary_ = pending_forced_boundary_;
+      ending_segment_ends_at_forced_boundary_ = forced_boundary_ready;
       RETURN_IF_ERROR(EndSegmentIfStarted());
       segment_start_time_ = timestamp;
       subsegment_start_time_ = timestamp;
       max_segment_time_ = timestamp + sample->duration();
       started_new_segment = true;
-      // Consumed: this sample is the real next one eligible to start a segment after a cue, so
-      // the wait is over - see pending_forced_boundary_'s own doc comment.
-      pending_forced_boundary_ = false;
+      if (forced_boundary_ready) {
+        // Consumed: this sample is the real next one eligible to start a segment after a cue, so
+        // the wait is over - see pending_forced_boundary_'s own doc comment. A regular cut that
+        // happens while a gated boundary is still waiting for its time leaves it pending.
+        pending_forced_boundary_ = false;
+        forced_boundary_gate_ = std::nullopt;
+        last_forced_cut_time_ = timestamp;
+        next_segment_cue_aligned_ = true;
+      }
       if (is_real_cut) {
         // Whether this cut the wait actually ended on (a real correction) or the safety valve
         // firing instead, the wait itself is over either way - but only when a cut genuinely
