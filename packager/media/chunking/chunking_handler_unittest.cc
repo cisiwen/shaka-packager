@@ -669,6 +669,56 @@ TEST_F(ChunkingHandlerTest, ForcedBoundaryAlreadyRealizedIsIgnored) {
           IsMediaSample(kStreamIndex, kStartTimestamp + kDuration * 4, kDuration, !kEncrypted, _)));
 }
 
+// The memory of a realized cut must not outlive the repeated copies it exists for. Confirmed live: a
+// stream that had made one forced cut was, hours of stream time later, asked for a boundary that - compared
+// modulo the 33-bit wrap period - looked as if it lay before that old cut, and every copy of the new event
+// was ignored as "already realized", so no forced cut happened at all (a segment 1.24s over nominal, and the
+// cue-follower held for its full safety valve).
+TEST_F(ChunkingHandlerTest, ForcedBoundaryIsNotIgnoredAgainstAStaleRealizedCut) {
+  ChunkingParams chunking_params;
+  // A long regular segment, so no periodic cut falls between the samples below.
+  chunking_params.segment_duration_in_seconds = 100;
+  SetUpChunkingHandler(1, chunking_params);
+
+  ASSERT_OK(Process(StreamData::FromStreamInfo(
+      kStreamIndex, GetVideoStreamInfo(kTimeScale1))));
+  ClearOutputStreamDataVector();
+
+  const int64_t kStartTimestamp = 12345;
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp, kDuration, kKeyFrame))));
+  // A forced cut at +1 duration, remembered as the last realized one.
+  ASSERT_OK(chunking_handler_->ForceSegmentBoundaryNow(
+      static_cast<double>(kStartTimestamp + kDuration) / kTimeScale1));
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kStartTimestamp + kDuration, kDuration, kKeyFrame))));
+  ClearOutputStreamDataVector();
+
+  // The stream moves on a long way (more than half the wrap period, in this stream's own ticks: 2^33
+  // ticks of 90kHz is 95443.7s, so 50000s is about half) - without the sample cadence changing.
+  // (Offset so the regular 100s grid, anchored at the first cut, has no line between the samples below.)
+  const int64_t kLater = kStartTimestamp + 50000 * static_cast<int64_t>(kTimeScale1) + 5000;
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kLater, kDuration, kKeyFrame))));
+  ClearOutputStreamDataVector();
+
+  // A new event for a boundary two samples ahead of where the stream is now.
+  const int64_t kBoundary = kLater + kDuration * 2;
+  ASSERT_OK(chunking_handler_->ForceSegmentBoundaryNow(static_cast<double>(kBoundary) / kTimeScale1));
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kLater + kDuration * 1, kDuration, kKeyFrame))));
+  ASSERT_OK(Process(StreamData::FromMediaSample(
+      kStreamIndex, GetMediaSample(kBoundary, kDuration, kKeyFrame))));
+
+  // It must cut at the boundary.
+  EXPECT_THAT(
+      GetOutputStreamDataVector(),
+      ElementsAre(
+          IsMediaSample(kStreamIndex, kLater + kDuration * 1, kDuration, !kEncrypted, _),
+          IsSegmentInfo(kStreamIndex, kLater, kDuration * 2, !kIsSubsegment, !kEncrypted),
+          IsMediaSample(kStreamIndex, kBoundary, kDuration, !kEncrypted, _)));
+}
+
 TEST_F(ChunkingHandlerTest, LowLatencyDash) {
   ChunkingParams chunking_params;
   chunking_params.low_latency_dash_mode = true;

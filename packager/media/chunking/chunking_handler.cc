@@ -40,6 +40,13 @@ const int64_t kMaxSuppressSegments = 3;
 // eligible sample instead, as before.
 const int64_t kMaxForcedBoundaryLeadSeconds = 120;
 
+// How long a realized forced cut is remembered for ignoring repeated requests for the same boundary
+// (the control plane injects each splice several times, and a cue-follower is corrected after the
+// sync source's own cut). Those arrive within seconds; anything older is a different event, and the
+// remembered time must not outlive that - a stream's position moves on by hours or jumps with a source
+// timeline reset, and a stale value compared modulo the wrap period can look like "already realized".
+const int64_t kForcedBoundaryDedupeWindowSeconds = 30;
+
 // MPEG-TS PTS wraps every 2^33 ticks of 90kHz; in a stream's own time scale that is this many
 // ticks. Timestamps reaching a ChunkingHandler are still wrapped, while a boundary derived from
 // another stream's (unwrapped) segment info or from a SCTE-35 time is not necessarily, so
@@ -139,14 +146,21 @@ void ChunkingHandler::ForceSegmentBoundaryAt(double event_time_in_seconds) {
   if (event_time_in_seconds > 0 && time_scale_ > 0) {
     gate = static_cast<int64_t>(std::llround(event_time_in_seconds * time_scale_));
     const int64_t period = WrapPeriod(time_scale_);
-    if (last_forced_cut_time_ &&
-        SignedModDiff(*gate, *last_forced_cut_time_, period) <= 0) {
-      // Already realized by a cut this stream made at or after that time: another copy of the
-      // same event, or a correction for a cut this stream already made on its own.
-      LOG(INFO) << "ChunkingHandler[" << this << "]: ignoring forced boundary at "
-                << event_time_in_seconds << "s, already realized at " << *last_forced_cut_time_
-                << " (stream ticks)";
-      return;
+    if (last_forced_cut_time_) {
+      // Only a cut this stream made moments ago can have realized this request.
+      const int64_t since_cut = SignedModDiff(max_segment_time_, *last_forced_cut_time_, period);
+      const bool recent = since_cut >= 0 &&
+                          since_cut <= kForcedBoundaryDedupeWindowSeconds * static_cast<int64_t>(time_scale_);
+      if (!recent) {
+        last_forced_cut_time_ = std::nullopt;
+      } else if (SignedModDiff(*gate, *last_forced_cut_time_, period) <= 0) {
+        // Already realized by a cut this stream made at or after that time: another copy of the
+        // same event, or a correction for a cut this stream already made on its own.
+        LOG(INFO) << "ChunkingHandler[" << this << "]: ignoring forced boundary at "
+                  << event_time_in_seconds << "s, already realized at " << *last_forced_cut_time_
+                  << " (stream ticks)";
+        return;
+      }
     }
     if (max_segment_time_ > 0 &&
         SignedModDiff(*gate, max_segment_time_, period) >
